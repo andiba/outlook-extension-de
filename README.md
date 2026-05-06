@@ -28,7 +28,7 @@ Plus:
 ### Option A — Claude Code (full plugin: MCP tools + skill + slash commands)
 
 ```powershell
-claude plugin marketplace add github:gabrieldenny-del/outlook-extension
+claude plugin marketplace add andiba/outlook-extension-de
 claude plugin install outlook@outlook-tools
 ```
 
@@ -36,13 +36,20 @@ Restart Claude Code. Run `/mcp` to confirm the `outlook` server shows up and `/p
 
 This option gives you the full experience: the MCP server, the `outlook-assistant` skill, and slash commands (`/triage-inbox`, `/daily-digest`, `/draft-reply`, `/clean-inbox`).
 
-### Option B — Claude desktop app (MCP server only, via `.mcpb` bundle)
+### Option B — Cowork / Claude Desktop (MCP server only, via `.mcpb` bundle)
 
-Download the latest `outlook-<version>.mcpb` from the [Releases](https://github.com/gabrieldenny-del/outlook-extension/releases) page, then **double-click** it. Claude desktop will open and prompt you to install the extension.
+Download the latest `outlook-<version>.mcpb` from the [Releases](https://github.com/andiba/outlook-extension-de/releases) page, then open Claude Desktop: **Settings → Extensions → Install from file** and pick the `.mcpb`.
 
-Alternatively, from inside Claude desktop: **Settings → Extensions → Install from file** and pick the `.mcpb`.
+> The desktop bundle contains the MCP server only. Skills and slash commands are a Claude Code feature and are not loaded in the desktop app.
 
-> The desktop bundle contains the MCP server only. Skills and slash commands are a Claude Code feature and are not loaded in the desktop app yet.
+### Both Claude Code + Cowork
+
+Claude Code and Cowork use **separate plugin registries**. If you want the extension in both, you need to install it twice:
+
+1. **Claude Code** — Option A above
+2. **Cowork** — Option B above (`.mcpb` from the Releases page)
+
+There is no single command that covers both.
 
 ## Use it
 
@@ -128,8 +135,27 @@ Most tools accept a `folder` string:
 |---|---|
 | omitted or `"inbox"` | Default Inbox |
 | `"sent"`, `"drafts"`, `"deleted"`, `"junk"`, `"outbox"`, `"calendar"` | Default special folders |
+| `"posteingang"`, `"entwürfe"`, `"kalender"`, … | German equivalents (see below) |
 | `"inbox/Processed/Q1"` | Subfolder under default Inbox |
 | `"account@example.com/Inbox/Processed"` | Walk from a specific store |
+
+### Localized folder names
+
+The following German folder aliases are supported alongside the English names:
+
+| German | English | Folder |
+|---|---|---|
+| `posteingang` | `inbox` | Inbox |
+| `gesendete elemente` / `gesendet` | `sent` | Sent Items |
+| `entwürfe` | `drafts` | Drafts |
+| `gelöschte elemente` / `papierkorb` | `deleted` / `trash` | Deleted Items |
+| `junk-e-mail` | `junk` | Junk Email |
+| `postausgang` | `outbox` | Outbox |
+| `kalender` | `calendar` | Calendar |
+| `kontakte` | `contacts` | Contacts |
+| `aufgaben` | `tasks` | Tasks |
+
+Subfolder resolution is case-insensitive, so paths like `"account@x.com/Inbox/Projects"` work even when Outlook displays the folder as "Posteingang" internally.
 
 ### Complete tool list
 
@@ -145,6 +171,9 @@ Most tools accept a `folder` string:
 - **Programmatic-access prompt.** Older Outlook versions or some group-policy configurations display a warning when an external process sends mail. Modern Office 365 generally suppresses it for trusted executables. IT admins can configure via Trust Center → Programmatic Access.
 - **Safe-by-default tool use.** The bundled `outlook-assistant` skill instructs Claude to draft before sending, soft-delete by default, and confirm batch operations.
 - **Sending is real.** `send_email` sends. For reviewable workflows, prefer `create_draft` and let a human hit Send.
+- **DASL filter injection prevention.** User input in search and filter parameters is escaped (single quotes, `%` and `_` LIKE wildcards) to prevent filter manipulation.
+- **Sensitive file blocking.** Attachment paths are validated against a blocklist of sensitive patterns (`.ssh`, `.aws`, `.env`, `.pem`, `.key`, `credentials.json`, etc.) to prevent accidental credential exfiltration.
+- **HTML sanitization.** Dangerous HTML tags (`<script>`, `<iframe>`, `<form>`, `<object>`, `<embed>`, `<applet>`, `<meta http-equiv>`) are stripped from `html_body` content before writing to drafts or sending, mitigating prompt injection attacks.
 
 ## Roadmap
 
