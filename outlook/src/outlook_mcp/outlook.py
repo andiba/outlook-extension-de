@@ -108,12 +108,15 @@ def _parse_dt(val: str | _dt.datetime) -> _dt.datetime:
 def _format_filter_dt(dt: _dt.datetime) -> str:
     """Format a datetime for Outlook DASL/Jet filter strings.
 
-    Outlook COM filters are locale-sensitive: strftime with %m/%d/%Y and %p
-    produces wrong results on non-English locales (e.g. German uses DD.MM.YYYY
-    and 24h time). The ISO-ish format YYYY/MM/DD HH:MM:SS works reliably
-    across all Windows locale settings in both @SQL= and Jet filters.
+    Outlook COM filters expect US-style dates: ``M/D/YYYY h:mm AM/PM``.
+    Using ``strftime("%p")`` is broken on non-English Windows locales
+    (e.g. German returns an empty string instead of AM/PM), so we build
+    the 12-hour period string manually.
     """
-    return dt.strftime("%Y/%m/%d %H:%M:%S")
+    h = dt.hour
+    period = "AM" if h < 12 else "PM"
+    h12 = h % 12 or 12
+    return f"{dt.month}/{dt.day}/{dt.year} {h12}:{dt.minute:02d} {period}"
 
 
 def _parse_categories(raw: str | None) -> list[str]:
@@ -409,7 +412,7 @@ def list_emails(
 
     restrict_parts = []
     if unread_only:
-        restrict_parts.append("[UnRead] = true")
+        restrict_parts.append("\"urn:schemas:httpmail:read\" = 0")
     if from_filter:
         esc = from_filter.replace("'", "''")
         restrict_parts.append(
@@ -418,13 +421,13 @@ def list_emails(
         )
     if subject_filter:
         esc = subject_filter.replace("'", "''")
-        restrict_parts.append(f"[Subject] LIKE '%{esc}%'")
+        restrict_parts.append(f"\"urn:schemas:httpmail:subject\" LIKE '%{esc}%'")
     if since:
         s = _format_filter_dt(_parse_dt(since))
-        restrict_parts.append(f"[ReceivedTime] >= '{s}'")
+        restrict_parts.append(f"\"urn:schemas:httpmail:datereceived\" >= '{s}'")
     if before:
         b = _format_filter_dt(_parse_dt(before))
-        restrict_parts.append(f"[ReceivedTime] < '{b}'")
+        restrict_parts.append(f"\"urn:schemas:httpmail:datereceived\" < '{b}'")
 
     if restrict_parts:
         filt = "@SQL=" + " AND ".join(restrict_parts)

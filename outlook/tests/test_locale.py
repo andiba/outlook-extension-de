@@ -42,28 +42,34 @@ from outlook_mcp.outlook import (
 # ---------- _format_filter_dt ----------
 
 class TestFormatFilterDt:
-    def test_basic_datetime(self):
+    def test_basic_datetime_pm(self):
         d = dt.datetime(2026, 5, 6, 14, 30, 0)
-        assert _format_filter_dt(d) == "2026/05/06 14:30:00"
+        assert _format_filter_dt(d) == "5/6/2026 2:30 PM"
 
     def test_midnight(self):
         d = dt.datetime(2026, 1, 1, 0, 0, 0)
-        assert _format_filter_dt(d) == "2026/01/01 00:00:00"
+        assert _format_filter_dt(d) == "1/1/2026 12:00 AM"
 
-    def test_single_digit_month_day(self):
-        d = dt.datetime(2026, 3, 7, 9, 5, 3)
-        assert _format_filter_dt(d) == "2026/03/07 09:05:03"
+    def test_morning(self):
+        d = dt.datetime(2026, 3, 7, 9, 5, 0)
+        assert _format_filter_dt(d) == "3/7/2026 9:05 AM"
 
-    def test_no_am_pm_suffix(self):
-        d = dt.datetime(2026, 5, 6, 15, 0, 0)
-        result = _format_filter_dt(d)
-        assert "AM" not in result
-        assert "PM" not in result
-        assert result == "2026/05/06 15:00:00"
+    def test_noon(self):
+        d = dt.datetime(2026, 5, 6, 12, 0, 0)
+        assert _format_filter_dt(d) == "5/6/2026 12:00 PM"
 
     def test_end_of_day(self):
-        d = dt.datetime(2026, 12, 31, 23, 59, 59)
-        assert _format_filter_dt(d) == "2026/12/31 23:59:59"
+        d = dt.datetime(2026, 12, 31, 23, 59, 0)
+        assert _format_filter_dt(d) == "12/31/2026 11:59 PM"
+
+    def test_no_strftime_p_used(self):
+        """Ensure AM/PM is hardcoded, not from locale-sensitive strftime(%p)."""
+        d = dt.datetime(2026, 5, 6, 15, 0, 0)
+        result = _format_filter_dt(d)
+        assert result.endswith("PM")
+        d2 = dt.datetime(2026, 5, 6, 3, 0, 0)
+        result2 = _format_filter_dt(d2)
+        assert result2.endswith("AM")
 
 
 # ---------- _NAMED_FOLDERS: German aliases ----------
