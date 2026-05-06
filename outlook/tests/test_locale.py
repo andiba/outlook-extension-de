@@ -23,6 +23,9 @@ sys.modules.setdefault("win32com.client", MagicMock())
 
 from outlook_mcp.outlook import (
     _format_filter_dt,
+    _escape_dasl,
+    _validate_attachment_path,
+    _sanitize_html_body,
     _NAMED_FOLDERS,
     _parse_categories,
     _walk_subfolders,
@@ -179,6 +182,100 @@ class TestWalkSubfolders:
 
 
 # ---------- _parse_categories (semicolon support) ----------
+
+# ---------- _escape_dasl ----------
+
+class TestEscapeDasl:
+    def test_single_quotes_doubled(self):
+        assert _escape_dasl("O'Brien") == "O''Brien"
+
+    def test_percent_escaped(self):
+        assert _escape_dasl("100%") == "100[%]"
+
+    def test_underscore_escaped(self):
+        assert _escape_dasl("file_name") == "file[_]name"
+
+    def test_combined(self):
+        assert _escape_dasl("it's 50% done_now") == "it''s 50[%] done[_]now"
+
+    def test_plain_text_unchanged(self):
+        assert _escape_dasl("hello world") == "hello world"
+
+    def test_injection_attempt_neutralized(self):
+        malicious = "%' OR 1=1 OR '"
+        escaped = _escape_dasl(malicious)
+        assert "OR" in escaped  # text preserved
+        assert escaped.startswith("[%]")  # but % is escaped
+
+
+# ---------- _validate_attachment_path ----------
+
+class TestValidateAttachmentPath:
+    @pytest.mark.parametrize("path", [
+        r"C:\Users\me\.ssh\id_rsa",
+        r"C:\Users\me\.ssh\id_ed25519",
+        r"C:\Users\me\.aws\credentials",
+        r"C:\Users\me\.gnupg\private.key",
+        r"C:\Users\me\.kube\config",
+        r"C:\project\server.pem",
+        r"C:\project\private.key",
+        r"C:\project\cert.pfx",
+        r"C:\project\keystore.p12",
+        r"C:\project\credentials.json",
+        r"C:\project\.env",
+        r"C:\project\.env.production",
+        r"C:\Users\me\.netrc",
+    ])
+    def test_blocks_sensitive_paths(self, path):
+        with pytest.raises(OutlookError, match="sensitive"):
+            _validate_attachment_path(path)
+
+    @pytest.mark.parametrize("path", [
+        r"C:\Users\me\Documents\report.pdf",
+        r"C:\Users\me\Desktop\photo.jpg",
+        r"C:\project\readme.md",
+        r"C:\project\data.csv",
+    ])
+    def test_allows_normal_paths(self, path):
+        _validate_attachment_path(path)  # should not raise
+
+
+# ---------- _sanitize_html_body ----------
+
+class TestSanitizeHtmlBody:
+    def test_strips_script_tag(self):
+        html = '<p>Hello</p><script>alert("xss")</script>'
+        result = _sanitize_html_body(html)
+        assert "<script" not in result
+        assert "<p>Hello</p>" in result
+
+    def test_strips_iframe(self):
+        html = '<iframe src="https://evil.com"></iframe>'
+        assert "<iframe" not in _sanitize_html_body(html)
+
+    def test_strips_object_embed_applet(self):
+        for tag in ["object", "embed", "applet"]:
+            html = f'<{tag} data="x"></{tag}>'
+            assert f"<{tag}" not in _sanitize_html_body(html)
+
+    def test_strips_form(self):
+        html = '<form action="https://evil.com"><input></form>'
+        assert "<form" not in _sanitize_html_body(html)
+
+    def test_strips_meta_http_equiv(self):
+        html = '<meta http-equiv="refresh" content="0;url=evil.com">'
+        assert "<meta" not in _sanitize_html_body(html)
+
+    def test_preserves_safe_html(self):
+        html = '<div><p>Hello <b>World</b></p><img src="logo.png"></div>'
+        assert _sanitize_html_body(html) == html
+
+    def test_case_insensitive(self):
+        html = '<SCRIPT>alert("xss")</SCRIPT>'
+        assert "<SCRIPT" not in _sanitize_html_body(html)
+
+
+# ---------- _parse_categories ----------
 
 class TestParseCategories:
     def test_comma_separated(self):

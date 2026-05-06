@@ -6,6 +6,7 @@ Raises `OutlookError` for user-facing failures.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 from typing import Any, Iterable, Literal, Sequence
 
 import pythoncom
@@ -117,6 +118,61 @@ def _format_filter_dt(dt: _dt.datetime) -> str:
     period = "AM" if h < 12 else "PM"
     h12 = h % 12 or 12
     return f"{dt.month}/{dt.day}/{dt.year} {h12}:{dt.minute:02d} {period}"
+
+
+def _escape_dasl(val: str) -> str:
+    """Escape a string for use inside a DASL @SQL= LIKE filter.
+
+    - Single quotes are doubled (standard SQL escaping).
+    - LIKE wildcards (% and _) are escaped so user input is treated as
+      literal text and cannot alter the filter structure.
+    """
+    return val.replace("'", "''").replace("%", "[%]").replace("_", "[_]")
+
+
+_BLOCKED_ATTACHMENT_PATTERNS: list[re.Pattern] = [
+    re.compile(r"[/\\]\.ssh[/\\]", re.IGNORECASE),
+    re.compile(r"[/\\]\.gnupg[/\\]", re.IGNORECASE),
+    re.compile(r"[/\\]\.aws[/\\]", re.IGNORECASE),
+    re.compile(r"[/\\]\.azure[/\\]", re.IGNORECASE),
+    re.compile(r"[/\\]\.kube[/\\]", re.IGNORECASE),
+    re.compile(r"\.pem$", re.IGNORECASE),
+    re.compile(r"\.key$", re.IGNORECASE),
+    re.compile(r"\.pfx$", re.IGNORECASE),
+    re.compile(r"\.p12$", re.IGNORECASE),
+    re.compile(r"id_rsa", re.IGNORECASE),
+    re.compile(r"id_ed25519", re.IGNORECASE),
+    re.compile(r"credentials\.json$", re.IGNORECASE),
+    re.compile(r"\.env$", re.IGNORECASE),
+    re.compile(r"\.env\.", re.IGNORECASE),
+    re.compile(r"\.netrc$", re.IGNORECASE),
+]
+
+
+def _validate_attachment_path(path: str) -> None:
+    """Raise OutlookError if path looks like a sensitive credential file."""
+    normalized = path.replace("\\", "/")
+    for pattern in _BLOCKED_ATTACHMENT_PATTERNS:
+        if pattern.search(normalized):
+            raise OutlookError(
+                f"Attachment blocked — path matches a sensitive file pattern: {path!r}"
+            )
+
+
+_DANGEROUS_HTML_RE = re.compile(
+    r"<\s*(?:script|iframe|object|embed|applet|form|meta\s+http-equiv)[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_html_body(html: str) -> str:
+    """Strip dangerous HTML tags from email body content.
+
+    Removes <script>, <iframe>, <object>, <embed>, <applet>, <form>,
+    and <meta http-equiv=...> tags that could be injected via prompt
+    injection attacks through malicious email content.
+    """
+    return _DANGEROUS_HTML_RE.sub("<!-- blocked -->", html)
 
 
 def _parse_categories(raw: str | None) -> list[str]:
@@ -414,13 +470,13 @@ def list_emails(
     if unread_only:
         restrict_parts.append("\"urn:schemas:httpmail:read\" = 0")
     if from_filter:
-        esc = from_filter.replace("'", "''")
+        esc = _escape_dasl(from_filter)
         restrict_parts.append(
             f"(\"urn:schemas:httpmail:fromemail\" LIKE '%{esc}%' OR "
             f"\"urn:schemas:httpmail:fromname\" LIKE '%{esc}%')"
         )
     if subject_filter:
-        esc = subject_filter.replace("'", "''")
+        esc = _escape_dasl(subject_filter)
         restrict_parts.append(f"\"urn:schemas:httpmail:subject\" LIKE '%{esc}%'")
     if since:
         s = _format_filter_dt(_parse_dt(since))
@@ -463,9 +519,9 @@ def search_emails(
     f = _resolve_folder(folder)
     items = f.Items
     items.Sort("[ReceivedTime]", True)
-    esc = query.replace("'", "''")
+    esc = _escape_dasl(query)
     filt = (
-        f"@SQL=([Subject] LIKE '%{esc}%' OR "
+        f"@SQL=(\"urn:schemas:httpmail:subject\" LIKE '%{esc}%' OR "
         f"\"urn:schemas:httpmail:fromname\" LIKE '%{esc}%' OR "
         f"\"urn:schemas:httpmail:textdescription\" LIKE '%{esc}%')"
     )
@@ -550,11 +606,12 @@ def create_draft(
     if subject is not None:
         draft.Subject = subject
     if html_body is not None:
-        draft.HTMLBody = html_body
+        draft.HTMLBody = _sanitize_html_body(html_body)
     elif body is not None:
         draft.Body = body
     if attachments:
         for path in attachments:
+            _validate_attachment_path(path)
             draft.Attachments.Add(path)
     draft.Importance = OL_IMPORTANCE[importance]
     if categories is not None:
@@ -587,11 +644,12 @@ def update_draft(
     if subject is not None:
         draft.Subject = subject
     if html_body is not None:
-        draft.HTMLBody = html_body
+        draft.HTMLBody = _sanitize_html_body(html_body)
     elif body is not None:
         draft.Body = body
     if add_attachments:
         for path in add_attachments:
+            _validate_attachment_path(path)
             draft.Attachments.Add(path)
     if importance is not None:
         draft.Importance = OL_IMPORTANCE[importance]
@@ -627,11 +685,12 @@ def send_email(
             draft.BCC = "; ".join(bcc)
         draft.Subject = subject
         if html_body is not None:
-            draft.HTMLBody = html_body
+            draft.HTMLBody = _sanitize_html_body(html_body)
         elif body is not None:
             draft.Body = body
         if attachments:
             for path in attachments:
+                _validate_attachment_path(path)
                 draft.Attachments.Add(path)
         draft.Importance = OL_IMPORTANCE[importance]
 
