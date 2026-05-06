@@ -50,6 +50,18 @@ _NAMED_FOLDERS = {
     "calendar": OL_FOLDER_CALENDAR,
     "contacts": OL_FOLDER_CONTACTS,
     "tasks": OL_FOLDER_TASKS,
+    # German (de) aliases
+    "posteingang": OL_FOLDER_INBOX,
+    "gesendete elemente": OL_FOLDER_SENT,
+    "gesendet": OL_FOLDER_SENT,
+    "entwürfe": OL_FOLDER_DRAFTS,
+    "gelöschte elemente": OL_FOLDER_DELETED,
+    "papierkorb": OL_FOLDER_DELETED,
+    "junk-e-mail": OL_FOLDER_JUNK,
+    "postausgang": OL_FOLDER_OUTBOX,
+    "kalender": OL_FOLDER_CALENDAR,
+    "kontakte": OL_FOLDER_CONTACTS,
+    "aufgaben": OL_FOLDER_TASKS,
 }
 
 
@@ -93,6 +105,17 @@ def _parse_dt(val: str | _dt.datetime) -> _dt.datetime:
         raise OutlookError(f"Invalid datetime (expected ISO 8601): {val!r}") from e
 
 
+def _format_filter_dt(dt: _dt.datetime) -> str:
+    """Format a datetime for Outlook DASL/Jet filter strings.
+
+    Outlook COM filters are locale-sensitive: strftime with %m/%d/%Y and %p
+    produces wrong results on non-English locales (e.g. German uses DD.MM.YYYY
+    and 24h time). The ISO-ish format YYYY/MM/DD HH:MM:SS works reliably
+    across all Windows locale settings in both @SQL= and Jet filters.
+    """
+    return dt.strftime("%Y/%m/%d %H:%M:%S")
+
+
 def _parse_categories(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -104,12 +127,41 @@ def _parse_categories(raw: str | None) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def _walk_subfolders(parent, sub_parts: list[str]):
+    """Walk into subfolders by name, with case-insensitive fallback.
+
+    Folders.Item() uses the exact localized name and raises com_error on
+    mismatch. The fallback scans all children case-insensitively so that
+    e.g. "Inbox" resolves on a German install where the folder is called
+    "Posteingang" at the COM level.
+    """
+    folder = parent
+    for sub in sub_parts:
+        try:
+            folder = folder.Folders.Item(sub)
+        except pywintypes.com_error:
+            sub_lower = sub.lower()
+            matched = None
+            for j in range(1, folder.Folders.Count + 1):
+                child = folder.Folders.Item(j)
+                if child.Name.lower() == sub_lower:
+                    matched = child
+                    break
+            if matched is None:
+                raise OutlookError(
+                    f"Subfolder {sub!r} not found under {getattr(folder, 'Name', '?')!r}"
+                )
+            folder = matched
+    return folder
+
+
 def _resolve_folder(path: str | None):
     """Resolve a folder path to a COM Folder object.
 
     Accepted forms:
       - None or "" → Inbox
       - "inbox", "sent", "drafts", "deleted", "junk", "outbox", "calendar"
+        (plus German equivalents: "posteingang", "entwürfe", etc.)
       - "inbox/Processed/Q1" → subfolder under default inbox
       - "account@example.com/Inbox/Processed" → walk from named store
     """
@@ -130,25 +182,18 @@ def _resolve_folder(path: str | None):
     # Named folder prefix + subpath (e.g., "inbox/Processed")
     if first_lower in _NAMED_FOLDERS:
         folder = ns.GetDefaultFolder(_NAMED_FOLDERS[first_lower])
-        for sub in parts[1:]:
-            folder = folder.Folders.Item(sub)
-        return folder
+        return _walk_subfolders(folder, parts[1:])
 
     # Maybe first part is a store (account) name
     stores = ns.Folders
     for i in range(1, stores.Count + 1):
         store = stores.Item(i)
         if store.Name.lower() == first_lower:
-            folder = store
-            for sub in parts[1:]:
-                folder = folder.Folders.Item(sub)
-            return folder
+            return _walk_subfolders(store, parts[1:])
 
     # Fall back: treat whole path as subpath under default store root
     folder = ns.DefaultStore.GetRootFolder()
-    for sub in parts:
-        folder = folder.Folders.Item(sub)
-    return folder
+    return _walk_subfolders(folder, parts)
 
 
 def _get_item(entry_id: str, store_id: str | None = None):
@@ -375,10 +420,10 @@ def list_emails(
         esc = subject_filter.replace("'", "''")
         restrict_parts.append(f"[Subject] LIKE '%{esc}%'")
     if since:
-        s = _parse_dt(since).strftime("%m/%d/%Y %H:%M %p")
+        s = _format_filter_dt(_parse_dt(since))
         restrict_parts.append(f"[ReceivedTime] >= '{s}'")
     if before:
-        b = _parse_dt(before).strftime("%m/%d/%Y %H:%M %p")
+        b = _format_filter_dt(_parse_dt(before))
         restrict_parts.append(f"[ReceivedTime] < '{b}'")
 
     if restrict_parts:
@@ -667,8 +712,8 @@ def list_calendar_events(
     items.Sort("[Start]")
     items.IncludeRecurrences = True
 
-    s = _parse_dt(start).strftime("%m/%d/%Y %H:%M %p")
-    e = _parse_dt(end).strftime("%m/%d/%Y %H:%M %p")
+    s = _format_filter_dt(_parse_dt(start))
+    e = _format_filter_dt(_parse_dt(end))
     filt = f"[Start] >= '{s}' AND [Start] < '{e}'"
     try:
         restricted = items.Restrict(filt)
