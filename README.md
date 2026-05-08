@@ -242,13 +242,16 @@ claude plugin install obsidian
 
 ---
 
-## Author
+## Authors
 
 **Gabriel Denny**
 - Website: [www.gabrieldenny.com](https://www.gabrieldenny.com)
 - LinkedIn: [gabrieljdenny](https://www.linkedin.com/in/gabrieljdenny)
 - GitHub: [@gabrieldenny-del](https://github.com/gabrieldenny-del)
 
+**Andreas Bauer**
+- GitHub: [@andiba](https://github.com/andiba)
+
 ## License
 
-MIT © 2026 Gabriel Denny — see [LICENSE](LICENSE).
+MIT © 2026 Gabriel Denny, Andreas Bauer — see [LICENSE](LICENSE).
