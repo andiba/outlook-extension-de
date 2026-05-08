@@ -8,6 +8,7 @@ Verbindet Claude Desktop (Cowork) mit deinem lokalen Obsidian-Vault via [MCP Too
 - **Obsidian** mit installiertem und aktiviertem **MCP Tools** Plugin (jacksteamdev)
 - **Local REST API** Plugin (coddingtonbear) - muss laufen, damit der MCP-Server antworten kann
 - Optional: **Smart Connections** Plugin fuer semantische Suche
+- Optional: **[Git](https://github.com/Vinzent03/obsidian-git)** Plugin (Vinzent) fuer automatischen Vault-Sync via GitHub
 
 ## Setup
 
@@ -103,8 +104,19 @@ Warum eine Extension und nicht einfach ein Custom Connector in Cowork?
 - `mcp-proxy --tunnel` hat Routing-Probleme (404 auf `/sse`)
 - Die Extension ist der einzige Weg, einen lokalen stdio-MCP-Server in Cowork einzubinden
 
+## Vault-Sync (optional)
+
+Fuer Sync auf mehreren Rechnern das **Git** Community Plugin (Vinzent) installieren:
+
+- Auto-Commit alle 10 Minuten
+- Auto-Push nach jedem Commit
+- Auto-Pull beim Start
+
+Vault als privates GitHub-Repo anlegen, `.gitignore` fuer `.obsidian/plugins/*/bin/`, `.smart-env/`, `workspace.json` und Plugin-`data.json` mit API-Keys.
+
 ## Links
 
 - [MCP Tools Plugin](https://github.com/jacksteamdev/obsidian-mcp-tools)
 - [Local REST API Plugin](https://github.com/coddingtonbear/obsidian-local-rest-api)
 - [Smart Connections](https://github.com/brianpetro/obsidian-smart-connections)
+- [Obsidian Git Plugin](https://github.com/Vinzent03/obsidian-git)
