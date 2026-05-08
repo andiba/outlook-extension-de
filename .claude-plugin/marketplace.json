@@ -9,6 +9,11 @@
       "name": "outlook",
       "source": "./outlook",
       "description": "Claude Cowork connector for Microsoft Outlook desktop (read email, draft/send, calendar, categories) via local COM — no Azure OAuth required."
+    },
+    {
+      "name": "obsidian",
+      "source": "./obsidian",
+      "description": "Connect Claude to your local Obsidian vault via MCP Tools plugin. Read, search, create and edit notes with Smart Connections semantic search."
     }
   ]
 }

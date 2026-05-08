@@ -1,0 +1,48 @@
+{
+  "manifest_version": "0.3",
+  "name": "obsidian",
+  "display_name": "Obsidian Vault",
+  "version": "0.1.0",
+  "description": "Connect Claude to your local Obsidian vault via MCP Tools plugin. Read, search, create and edit notes with Smart Connections semantic search.",
+  "long_description": "Connects Claude to your locally-running Obsidian vault via the MCP Tools plugin (jacksteamdev).\n\n**Capabilities**\n- Read, create, edit and delete notes\n- Search by filename or content\n- Smart Connections semantic search\n- List vault structure\n- Manage prompts and templates\n\n**Requirements**\n- Obsidian must be running with the MCP Tools plugin installed and enabled\n- The MCP Tools plugin must have an API key configured\n\n**Windows only** (uses the MCP Tools native binary).",
+  "author": {
+    "name": "Andreas Bauer"
+  },
+  "keywords": ["obsidian", "notes", "knowledge", "vault", "markdown", "productivity"],
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "<DEIN_VAULT_PFAD>\\.obsidian\\plugins\\mcp-tools\\bin\\mcp-server.exe",
+      "env": {
+        "MCP_SERVER_PATH": "<DEIN_VAULT_PFAD>\\.obsidian\\plugins\\mcp-tools\\bin\\mcp-server.exe",
+        "OBSIDIAN_API_KEY": "<DEIN_API_KEY>"
+      }
+    }
+  },
+  "tools": [
+    {"name": "get_active_file", "description": "Get the currently active file in Obsidian"},
+    {"name": "get_vault_file", "description": "Read a specific file from the vault"},
+    {"name": "list_vault_files", "description": "List files in the vault"},
+    {"name": "search_vault", "description": "Search vault by filename or content"},
+    {"name": "search_vault_simple", "description": "Simple text search across the vault"},
+    {"name": "search_vault_smart", "description": "Semantic search using Smart Connections"},
+    {"name": "create_vault_file", "description": "Create a new file in the vault"},
+    {"name": "patch_vault_file", "description": "Patch/update a file in the vault"},
+    {"name": "append_to_vault_file", "description": "Append content to a vault file"},
+    {"name": "delete_vault_file", "description": "Delete a file from the vault"},
+    {"name": "update_active_file", "description": "Update the currently active file"},
+    {"name": "append_to_active_file", "description": "Append content to the active file"},
+    {"name": "patch_active_file", "description": "Patch the active file"},
+    {"name": "delete_active_file", "description": "Delete the active file"},
+    {"name": "show_file_in_obsidian", "description": "Open a file in the Obsidian UI"},
+    {"name": "get_server_info", "description": "Get MCP server info"},
+    {"name": "execute_template", "description": "Execute an Obsidian template"},
+    {"name": "fetch", "description": "Fetch a URL and return its content"}
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["win32"]
+  }
+}

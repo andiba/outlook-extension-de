@@ -1,0 +1,10 @@
+{
+  "name": "obsidian",
+  "version": "0.1.0",
+  "description": "Connect Claude to your local Obsidian vault via the MCP Tools plugin (jacksteamdev). Read, search, create and edit notes, use Smart Connections semantic search. Requires the Obsidian MCP Tools plugin to be installed and Obsidian to be running.",
+  "author": {
+    "name": "Andreas Bauer"
+  },
+  "license": "MIT",
+  "keywords": ["obsidian", "notes", "knowledge", "vault", "markdown", "cowork", "productivity"]
+}

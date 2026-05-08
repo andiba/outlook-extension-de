@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "C:\\Entwicklung\\obsidian\\zweitesGehirn\\zweitesGehirn\\.obsidian\\plugins\\mcp-tools\\bin\\mcp-server.exe",
+      "env": {
+        "OBSIDIAN_API_KEY": "fdf9937bcf436503cdc2a9f5e519b1b53595a6767dcb5d3037a5cbe60cddfdb9"
+      }
+    }
+  }
+}
