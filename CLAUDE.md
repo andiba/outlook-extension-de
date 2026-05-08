@@ -26,9 +26,19 @@ Lokale Claude-Erweiterungen (Extensions + Plugins) fuer Windows, die Claude mit 
 - **Obsidian Vault:** `C:\Entwicklung\obsidian\zweitesGehirn\zweitesGehirn\`
 - **MCP-Server-Binary:** `<vault>\.obsidian\plugins\mcp-tools\bin\mcp-server.exe`
 
+## Obsidian Vault Repo
+
+- **GitHub:** [andiba/obsidian](https://github.com/andiba/obsidian.git) (privat)
+- **Lokal:** `C:\Entwicklung\obsidian\zweitesGehirn\zweitesGehirn\`
+- **Sync:** Obsidian Git Plugin (Vinzent) — auto-commit + push
+- **Session-Routine:**
+  1. Am Anfang jeder Session: `git pull` im Vault-Repo ausfuehren, damit Aenderungen von anderen Rechnern da sind
+  2. Nach Aenderungen am Vault (Notizen erstellt/bearbeitet): User fragen ob committed und gepusht werden soll
+
 ## Hinweise
 
 - Claude Code und Cowork haben **getrennte Plugin-Systeme** — Extensions muessen separat installiert werden
 - Cowork laedt lokale MCP-Server nur ueber das Extension-System (`.mcpb`), nicht ueber `claude_desktop_config.json`
 - Cowork Custom Connector akzeptiert keine localhost-URLs
 - Nach Extension-Aenderungen: Claude Desktop komplett beenden + neu starten
+- **Vault-Repo nicht vergessen:** Bei Vault-Aenderungen immer nach Commit+Push fragen
