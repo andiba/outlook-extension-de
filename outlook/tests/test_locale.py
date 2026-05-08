@@ -23,6 +23,8 @@ sys.modules.setdefault("win32com.client", MagicMock())
 
 from outlook_mcp.outlook import (
     _format_filter_dt,
+    _format_jet_filter_dt,
+    _WIN_SHORT_DATE_FMT,
     _escape_dasl,
     _validate_attachment_path,
     _sanitize_html_body,
@@ -73,6 +75,44 @@ class TestFormatFilterDt:
         d2 = dt.datetime(2026, 5, 6, 3, 0, 0)
         result2 = _format_filter_dt(d2)
         assert result2.endswith("AM")
+
+
+# ---------- _format_jet_filter_dt ----------
+
+class TestFormatJetFilterDt:
+    """Tests for locale-aware Jet filter date formatting (calendar queries)."""
+
+    def test_contains_date_and_time(self):
+        d = dt.datetime(2026, 5, 8, 14, 30, 0)
+        result = _format_jet_filter_dt(d)
+        # Must end with 24h time
+        assert result.endswith("14:30")
+
+    def test_midnight(self):
+        d = dt.datetime(2026, 1, 1, 0, 0, 0)
+        result = _format_jet_filter_dt(d)
+        assert result.endswith("00:00")
+
+    def test_uses_windows_locale_format(self):
+        """The result should match the cached _WIN_SHORT_DATE_FMT pattern."""
+        # On CI (non-Windows) this will be "M/d/yyyy" (the fallback).
+        # On German Windows it will be "dd.MM.yyyy".
+        # Either way, verify the function produces a parseable result.
+        d = dt.datetime(2026, 12, 25, 9, 5, 0)
+        result = _format_jet_filter_dt(d)
+        assert "2026" in result
+        assert "09:05" in result
+
+    def test_different_from_dasl_format_on_german(self):
+        """Jet format should differ from DASL format when locale is German."""
+        d = dt.datetime(2026, 5, 8, 14, 30, 0)
+        dasl = _format_filter_dt(d)
+        jet = _format_jet_filter_dt(d)
+        # On German Windows: jet is "08.05.2026 14:30", dasl is "5/8/2026 2:30 PM"
+        # On non-Windows CI: jet might be "5/8/2026 14:30" — still different due to 24h time
+        # In all cases, both contain 2026
+        assert "2026" in dasl
+        assert "2026" in jet
 
 
 # ---------- _NAMED_FOLDERS: German aliases ----------

@@ -5,6 +5,7 @@ Raises `OutlookError` for user-facing failures.
 """
 from __future__ import annotations
 
+import ctypes
 import datetime as _dt
 import re
 from typing import Any, Iterable, Literal, Sequence
@@ -118,6 +119,56 @@ def _format_filter_dt(dt: _dt.datetime) -> str:
     period = "AM" if h < 12 else "PM"
     h12 = h % 12 or 12
     return f"{dt.month}/{dt.day}/{dt.year} {h12}:{dt.minute:02d} {period}"
+
+
+def _get_windows_short_date_format() -> str:
+    """Return the Windows short date format string (e.g. 'dd.MM.yyyy' on German).
+
+    Falls back to US-style ``M/d/yyyy`` on non-Windows platforms.
+    """
+    try:
+        LOCALE_USER_DEFAULT = 0x0400
+        LOCALE_SSHORTDATE = 0x1F
+        buf = ctypes.create_unicode_buffer(80)
+        ctypes.windll.kernel32.GetLocaleInfoW(  # type: ignore[attr-defined]
+            LOCALE_USER_DEFAULT, LOCALE_SSHORTDATE, buf, 80,
+        )
+        return buf.value or "M/d/yyyy"
+    except (AttributeError, OSError):
+        # Not on Windows (no ctypes.windll) — default to US format.
+        return "M/d/yyyy"
+
+
+# Cache the format at module load so we don't call into kernel32 on every query.
+_WIN_SHORT_DATE_FMT: str = _get_windows_short_date_format()
+
+
+def _format_jet_filter_dt(dt: _dt.datetime) -> str:
+    """Format a datetime for Outlook **Jet** filter strings (calendar).
+
+    Jet filters (``[Start] >= '…'``) require the date in the **Windows
+    system locale** format — e.g. ``dd.MM.yyyy`` on German Windows,
+    ``M/d/yyyy`` on US Windows. Using the wrong format silently returns
+    zero results instead of raising an error.
+
+    DASL filters (``@SQL="urn:…" >= '…'``) accept US-style dates and
+    should use :func:`_format_filter_dt` instead.
+    """
+    fmt = _WIN_SHORT_DATE_FMT
+    # Windows date-format tokens → Python values.
+    # Replace longer tokens first to avoid partial matches (dd before d).
+    result = fmt
+    result = result.replace("dddd", "")   # skip day-of-week name
+    result = result.replace("ddd", "")    # skip abbreviated day name
+    result = result.replace("dd", f"{dt.day:02d}")
+    result = result.replace("d", str(dt.day))
+    result = result.replace("MMMM", "")   # skip month name
+    result = result.replace("MMM", "")    # skip abbreviated month name
+    result = result.replace("MM", f"{dt.month:02d}")
+    result = result.replace("M", str(dt.month))
+    result = result.replace("yyyy", str(dt.year))
+    result = result.replace("yy", str(dt.year % 100).zfill(2))
+    return f"{result} {dt.hour:02d}:{dt.minute:02d}"
 
 
 def _escape_dasl(val: str) -> str:
@@ -774,19 +825,27 @@ def list_calendar_events(
     items.Sort("[Start]")
     items.IncludeRecurrences = True
 
-    s = _format_filter_dt(_parse_dt(start))
-    e = _format_filter_dt(_parse_dt(end))
+    # Calendar uses Jet filters ([Start] >= '…'), which require the
+    # Windows system-locale date format.  DASL URIs are not used here
+    # because IncludeRecurrences only works with Jet Restrict.
+    s = _format_jet_filter_dt(_parse_dt(start))
+    e = _format_jet_filter_dt(_parse_dt(end))
     filt = f"[Start] >= '{s}' AND [Start] < '{e}'"
     try:
         restricted = items.Restrict(filt)
     except pywintypes.com_error as ex:
         raise OutlookError(f"Calendar filter failed: {ex}") from ex
 
-    out = []
-    for appt in restricted:
+    # With IncludeRecurrences=True the collection has no fixed Count,
+    # so Python's ``for … in`` (which relies on _NewEnum / Count) may
+    # silently yield nothing.  Use the GetFirst/GetNext COM pattern.
+    out: list[dict] = []
+    appt = restricted.GetFirst()
+    while appt:
         if len(out) >= limit:
             break
         out.append(_event_summary(appt))
+        appt = restricted.GetNext()
     return out
 
 
