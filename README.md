@@ -1,8 +1,19 @@
-# outlook-tools — Claude Cowork connector for Microsoft Outlook
+# Claude Local Connectors — Outlook + Obsidian
 
-A shareable Claude Code / Cowork plugin that lets Claude drive the **locally-installed Microsoft Outlook desktop client** via COM. No Azure AD registration, no OAuth, no cloud. Works against whatever accounts your Outlook profile already has.
+Shareable Claude Code / Cowork extensions that connect Claude to **local desktop applications** — no cloud APIs, no OAuth, no external services.
 
-**Windows only.** Requires Outlook desktop and [uv](https://docs.astral.sh/uv/) installed.
+**Windows only.**
+
+| Extension | What it does | Requirements |
+|---|---|---|
+| **[Outlook](outlook/)** | Email, calendar, categories via COM | Outlook desktop + [uv](https://docs.astral.sh/uv/) |
+| **[Obsidian](obsidian-dxt/)** | Read, search, create, edit vault notes via MCP Tools | Obsidian + [MCP Tools plugin](https://github.com/jacksteamdev/obsidian-mcp-tools) |
+
+---
+
+## Outlook
+
+Lets Claude drive the **locally-installed Microsoft Outlook desktop client** via COM. No Azure AD registration, no OAuth, no cloud. Works against whatever accounts your Outlook profile already has.
 
 ## What it does
 
@@ -89,8 +100,15 @@ claude plugin install outlook@outlook-tools
 ```
 .
 ├── .claude-plugin/
-│   └── marketplace.json     # Claude Code marketplace (1 plugin: "outlook")
-├── outlook/                 # the Claude Code plugin
+│   └── marketplace.json     # Claude Code marketplace (outlook + obsidian)
+├── obsidian/                # Obsidian Claude Code plugin (CLI)
+│   ├── .claude-plugin/plugin.json
+│   └── .mcp.json            # MCP server registration (stdio)
+├── obsidian-dxt/            # Obsidian Claude Desktop Extension (Cowork)
+│   ├── manifest.json        # .mcpb manifest — edit paths + API key here
+│   ├── server/index.js      # Node wrapper spawning mcp-server.exe
+│   └── README.md            # Full setup guide
+├── outlook/                 # the Outlook Claude Code plugin
 │   ├── .claude-plugin/plugin.json
 │   ├── .mcp.json            # MCP server registration using ${CLAUDE_PLUGIN_ROOT}
 │   ├── commands/            # slash commands
@@ -181,6 +199,48 @@ Subfolder resolution is case-insensitive, so paths like `"account@x.com/Inbox/Pr
 - Contacts + tasks tools
 - Attachment download (save to disk)
 - C#/.NET port for single-exe distribution (easier IT whitelisting than a Python venv)
+
+---
+
+## Obsidian
+
+Connects Claude to a local [Obsidian](https://obsidian.md) vault via the [MCP Tools plugin](https://github.com/jacksteamdev/obsidian-mcp-tools) (jacksteamdev). Supports reading, creating, editing and deleting notes, full-text search, and semantic search via Smart Connections.
+
+### Prerequisites
+
+- **Obsidian** with the **MCP Tools** plugin installed (click "Install Server" in plugin settings)
+- **Local REST API** plugin (coddingtonbear) — must be active
+- Optional: **Smart Connections** plugin for semantic search
+
+### Install for Cowork (Claude Desktop Extension)
+
+1. Copy `obsidian-dxt/` to `%APPDATA%\Claude\Claude Extensions\local.mcpb.<your-name>.obsidian\`
+2. Edit `manifest.json` — set `MCP_SERVER_PATH` and `command` to your `mcp-server.exe` path, set `OBSIDIAN_API_KEY` to your key
+3. Register in `%APPDATA%\Claude\extensions-installations.json`
+4. Restart Claude Desktop, open a new Cowork conversation
+
+See [`obsidian-dxt/README.md`](obsidian-dxt/README.md) for the full step-by-step guide.
+
+### Install for Claude Code (CLI)
+
+```powershell
+claude mcp add obsidian \
+  --env OBSIDIAN_API_KEY=<your-key> \
+  -- "<vault-path>\.obsidian\plugins\mcp-tools\bin\mcp-server.exe"
+```
+
+Or install the plugin from this repo:
+
+```powershell
+claude plugin marketplace add andiba/outlook-extension-de
+claude plugin install obsidian
+```
+
+### Obsidian tools
+
+`search_vault`, `search_vault_simple`, `search_vault_smart`, `list_vault_files`, `get_vault_file`, `create_vault_file`, `append_to_vault_file`, `patch_vault_file`, `delete_vault_file`, `get_active_file`, `update_active_file`, `patch_active_file`, `append_to_active_file`, `delete_active_file`, `execute_template`, `show_file_in_obsidian`, `get_server_info`, `fetch`
+
+---
 
 ## Author
 
