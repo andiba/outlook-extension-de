@@ -2,6 +2,8 @@
 # Build the Claude Desktop Extension (.mcpb) bundle for Outlook.
 #
 # Prerequisites:
+#   - bash (Git Bash / WSL on Windows; native on macOS / Linux)
+#   - python3 on PATH (used to read the manifest version reliably)
 #   - Node.js + npx (for @anthropic-ai/mcpb)
 #   - uv (for on-demand Pillow to convert the icon)
 #
@@ -12,7 +14,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-VERSION=$(grep -E '"version"\s*:' dxt/manifest.json | head -1 | sed -E 's/.*"version"\s*:\s*"([^"]+)".*/\1/')
+# Use python's json parser instead of grep+sed: macOS BSD sed does not
+# support \s, and a regex over the manifest is also fragile because the
+# substring "version" appears inside the multi-line "long_description"
+# field. python3 ships with macOS and is available everywhere bash runs.
+VERSION=$(python3 -c 'import json; print(json.load(open("dxt/manifest.json"))["version"])')
 OUTPUT="outlook-${VERSION}.mcpb"
 
 echo "==> Cleaning bundle"

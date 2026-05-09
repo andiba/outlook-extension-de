@@ -71,6 +71,35 @@ Claude Code and Cowork use **separate plugin registries**. If you want the exten
 
 There is no single command that covers both.
 
+### Alternative: Claude Code without the marketplace (just the MCP server)
+
+If you only need the MCP tools (no slash commands, no skill) and don't want to wait for the marketplace to refresh, register the server directly. Works on Windows and macOS:
+
+```bash
+# from anywhere — point at your local clone
+claude mcp add outlook --scope user -- \
+  uv --directory /path/to/outlook-extension-de/outlook run outlook-mcp
+```
+
+`--scope user` makes it available in every project. New chat sessions pick it up automatically; running sessions need a restart.
+
+### Verify the install
+
+**Claude Code**
+
+```bash
+claude mcp list                  # → outlook  ✓ Connected
+claude mcp get outlook           # detail view (scope + command + env)
+```
+
+In a new chat, ask Claude something like *"List my last three unread emails"* — the model should call `mcp__outlook__list_emails`.
+
+**Cowork / Claude Desktop**
+
+After installing the `.mcpb`, **fully quit Claude Desktop** (Cmd+Q on macOS, *Quit* in the tray on Windows — closing the window is not enough) and reopen it. Then in **Settings → Extensions** the *Outlook (local desktop)* extension should appear as Active. Open a new conversation; the tools surface as `mcp__Outlook_local_desktop__…` (or whatever Cowork chose to namespace them as).
+
+Both runtimes need Outlook desktop to be **running** when the tools are called.
+
 ## Use it
 
 ```
@@ -151,10 +180,12 @@ The first time the MCP server contacts Outlook, macOS prompts for Automation per
 
 ```bash
 bash scripts/build-dxt.sh
-# → outlook-0.1.0.mcpb in repo root
+# → outlook-<version>.mcpb in repo root
 ```
 
-The script copies `outlook/src/outlook_mcp` and `outlook/pyproject.toml` into `dxt/server/`, converts `icon.jpg` → PNG via `uv`+Pillow, and packs the bundle with `@anthropic-ai/mcpb`. Distribute the `.mcpb` by attaching it to a GitHub Release.
+Prerequisites: `bash` (Git Bash / WSL on Windows; native on macOS), `python3` on PATH (used to read the manifest version cross-platform — macOS BSD sed handles the previous regex inconsistently), `node`+`npx` for `@anthropic-ai/mcpb`, and `uv` for the on-demand Pillow conversion.
+
+The script copies `outlook/src/outlook_mcp` and `outlook/pyproject.toml` into `dxt/server/`, converts `icon.jpg` → PNG via `uv`+Pillow, and packs the bundle with `@anthropic-ai/mcpb`. Distribute the `.mcpb` by attaching it to a GitHub Release, or install locally via Claude Desktop **Settings → Extensions → Install from file**.
 
 The `outlook.py` COM wrapper has no MCP dependency and can be imported directly for scripting:
 
