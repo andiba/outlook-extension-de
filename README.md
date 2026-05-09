@@ -2,18 +2,19 @@
 
 Shareable Claude Code / Cowork extensions that connect Claude to **local desktop applications** — no cloud APIs, no OAuth, no external services.
 
-**Windows only.**
-
-| Extension | What it does | Requirements |
-|---|---|---|
-| **[Outlook](outlook/)** | Email, calendar, categories via COM | Outlook desktop + [uv](https://docs.astral.sh/uv/) |
-| **[Obsidian](obsidian-dxt/)** | Read, search, create, edit vault notes via MCP Tools | Obsidian + [MCP Tools plugin](https://github.com/jacksteamdev/obsidian-mcp-tools) |
+| Extension | What it does | Platforms | Requirements |
+|---|---|---|---|
+| **[Outlook](outlook/)** | Email, calendar, categories | Windows · **macOS** (16.x classic) | Outlook desktop + [uv](https://docs.astral.sh/uv/) |
+| **[Obsidian](obsidian-dxt/)** | Read, search, create, edit vault notes via MCP Tools | Windows | Obsidian + [MCP Tools plugin](https://github.com/jacksteamdev/obsidian-mcp-tools) |
 
 ---
 
 ## Outlook
 
-Lets Claude drive the **locally-installed Microsoft Outlook desktop client** via COM. No Azure AD registration, no OAuth, no cloud. Works against whatever accounts your Outlook profile already has.
+Lets Claude drive the **locally-installed Microsoft Outlook desktop client**. No Azure AD registration, no OAuth, no cloud. Works against whatever accounts your Outlook profile already has.
+
+- **Windows:** COM automation via `pywin32`
+- **macOS:** classic Outlook AppleScript dictionary (16.x — *not* the Electron-based "New Outlook"; toggle off in Outlook Preferences if needed)
 
 ## What it does
 
@@ -33,23 +34,31 @@ Plus:
 
 ### Prerequisites
 
-- **Windows** with Outlook desktop installed and a profile configured
+- **Windows** with Outlook desktop installed and a profile configured, **or**
+- **macOS** with Outlook desktop installed (classic, not "New Outlook"). On first run macOS will prompt for Automation permission to control Outlook — approve it once.
 - [**uv**](https://docs.astral.sh/uv/getting-started/installation/) on PATH (handles Python + dependencies)
 
 ### Option A — Claude Code (full plugin: MCP tools + skill + slash commands)
 
 ```powershell
+# Windows (PowerShell)
 claude plugin marketplace add andiba/outlook-extension-de
 claude plugin install outlook@outlook-tools
 ```
 
-Restart Claude Code. Run `/mcp` to confirm the `outlook` server shows up and `/plugin` to see the plugin listed. On first run, `uv` creates a venv inside the plugin directory and installs dependencies; subsequent launches reuse it.
+```bash
+# macOS (zsh / bash) — same commands
+claude plugin marketplace add andiba/outlook-extension-de
+claude plugin install outlook@outlook-tools
+```
+
+Restart Claude Code. Run `/mcp` to confirm the `outlook` server shows up and `/plugin` to see the plugin listed. On first run, `uv` creates a venv inside the plugin directory and installs dependencies; subsequent launches reuse it. The package's platform-specific dependency (`pywin32`) is gated to Windows, so macOS installs do not pull it.
 
 This option gives you the full experience: the MCP server, the `outlook-assistant` skill, and slash commands (`/triage-inbox`, `/daily-digest`, `/draft-reply`, `/clean-inbox`).
 
 ### Option B — Cowork / Claude Desktop (MCP server only, via `.mcpb` bundle)
 
-Download the latest `outlook-<version>.mcpb` from the [Releases](https://github.com/andiba/outlook-extension-de/releases) page, then open Claude Desktop: **Settings → Extensions → Install from file** and pick the `.mcpb`.
+Download the latest `outlook-<version>.mcpb` from the [Releases](https://github.com/andiba/outlook-extension-de/releases) page, then open Claude Desktop: **Settings → Extensions → Install from file** and pick the `.mcpb`. The bundle's manifest declares both `win32` and `darwin` as compatible platforms.
 
 > The desktop bundle contains the MCP server only. Skills and slash commands are a Claude Code feature and are not loaded in the desktop app.
 
@@ -106,7 +115,7 @@ claude plugin install outlook@outlook-tools
 │   └── .mcp.json            # MCP server registration (stdio)
 ├── obsidian-dxt/            # Obsidian Claude Desktop Extension (Cowork)
 │   ├── manifest.json        # .mcpb manifest — edit paths + API key here
-│   ├── server/index.js      # Node wrapper spawning mcp-server.exe
+│   ├── server/index.js      # Node wrapper spawning mcp-server(.exe)
 │   └── README.md            # Full setup guide
 ├── outlook/                 # the Outlook Claude Code plugin
 │   ├── .claude-plugin/plugin.json
@@ -114,8 +123,10 @@ claude plugin install outlook@outlook-tools
 │   ├── commands/            # slash commands
 │   ├── skills/outlook-assistant/SKILL.md
 │   ├── src/outlook_mcp/     # Python MCP server
-│   │   ├── outlook.py       # COM wrapper (pure, no MCP dep)
-│   │   └── server.py        # FastMCP tool definitions
+│   │   ├── outlook.py       # platform router (delegates to outlook_win / outlook_mac)
+│   │   ├── outlook_win.py   # Windows backend — COM via pywin32
+│   │   ├── outlook_mac.py   # macOS backend — JXA + AppleScript via osascript
+│   │   └── server.py        # FastMCP tool definitions (cross-platform)
 │   └── pyproject.toml
 ├── dxt/                     # Claude desktop extension staging
 │   ├── manifest.json        # .mcpb manifest (Anthropic desktop extension spec)
@@ -126,6 +137,15 @@ claude plugin install outlook@outlook-tools
 ├── LICENSE
 └── README.md
 ```
+
+**macOS backend notes**
+
+`outlook_mac.py` drives Outlook through `osascript` in two modes:
+
+- **JXA** for read-only and idempotent property reads (folders, accounts, listing emails / calendar events, search) — fast and JSON-friendly.
+- **Plain AppleScript** for any operation that creates or modifies recipients, attendees, or categories on a draft / event. Outlook 16.x has known AppleEvent quirks where mixing JXA and AS on the same draft, or using the abstract `recipient` class on a draft that already has CC recipients, fails with cryptic `-10000` errors. The backend works around this by issuing those mutations via pure AS using the explicit `to recipient` / `cc recipient` / `bcc recipient` classes.
+
+The first time the MCP server contacts Outlook, macOS prompts for Automation permission. If you accidentally deny it, re-enable under **System Settings → Privacy & Security → Automation** (or reset with `tccutil reset AppleEvents`).
 
 ### Build the desktop extension
 
@@ -185,7 +205,7 @@ Subfolder resolution is case-insensitive, so paths like `"account@x.com/Inbox/Pr
 
 ## Security & safety
 
-- **No cloud auth.** The plugin talks to the Outlook COM object on your machine. If you can read the mailbox in Outlook, the plugin can too — nothing more, nothing less.
+- **No cloud auth.** The plugin talks to the local Outlook desktop client (COM on Windows, AppleScript on macOS). If you can read the mailbox in Outlook, the plugin can too — nothing more, nothing less.
 - **Programmatic-access prompt.** Older Outlook versions or some group-policy configurations display a warning when an external process sends mail. Modern Office 365 generally suppresses it for trusted executables. IT admins can configure via Trust Center → Programmatic Access.
 - **Safe-by-default tool use.** The bundled `outlook-assistant` skill instructs Claude to draft before sending, soft-delete by default, and confirm batch operations.
 - **Sending is real.** `send_email` sends. For reviewable workflows, prefer `create_draft` and let a human hit Send.

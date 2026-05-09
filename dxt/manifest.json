@@ -1,10 +1,10 @@
 {
   "manifest_version": "0.3",
   "name": "outlook",
-  "display_name": "Outlook (local COM)",
-  "version": "0.1.0",
-  "description": "Drive Microsoft Outlook desktop from Claude: read email, draft/send, manage calendar, apply categories. Uses local COM — no Azure/OAuth required.",
-  "long_description": "Connects Claude to your locally-installed Microsoft Outlook desktop client via COM automation.\n\n**Capabilities**\n- Email: list, read, search, move, delete, draft, reply, forward, send\n- Calendar: list events, create, update, delete, respond to invites\n- Categories: list master list, apply to emails or events\n\n**Why no Azure AD?**\nThe extension talks directly to the Outlook client on your machine. If you can read the mailbox in Outlook, the extension can too — no OAuth app registration, no IT approval step.\n\n**Windows only.** Requires Outlook desktop installed and [uv](https://docs.astral.sh/uv/) on PATH.",
+  "display_name": "Outlook (local desktop)",
+  "version": "0.2.0",
+  "description": "Drive Microsoft Outlook desktop from Claude: read email, draft/send, manage calendar, apply categories. Uses the local desktop app — no Azure/OAuth required.",
+  "long_description": "Connects Claude to your locally-installed Microsoft Outlook desktop client. **Windows** uses COM automation; **macOS** uses the classic Outlook AppleScript dictionary (16.x — not the Electron-based 'New Outlook').\n\n**Capabilities**\n- Email: list, read, search, move, delete, draft, reply, forward, send\n- Calendar: list events, create, update, delete, respond to invites\n- Categories: list master list, apply to emails or events\n\n**Why no Azure AD?**\nThe extension talks directly to the Outlook client on your machine. If you can read the mailbox in Outlook, the extension can too — no OAuth app registration, no IT approval step.\n\n**Requirements:** Outlook desktop installed and [uv](https://docs.astral.sh/uv/) on PATH. On macOS, the first run prompts for Automation permission to control Outlook; approve it once.",
   "author": {
     "name": "Gabriel Denny",
     "url": "https://www.gabrieldenny.com"
@@ -54,7 +54,7 @@
   ],
   "compatibility": {
     "claude_desktop": ">=0.10.0",
-    "platforms": ["win32"],
+    "platforms": ["win32", "darwin"],
     "runtimes": {
       "python": ">=3.14"
     }

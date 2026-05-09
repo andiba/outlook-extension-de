@@ -1,7 +1,7 @@
 [project]
 name = "outlook-mcp"
 version = "0.1.0"
-description = "MCP server exposing Microsoft Outlook (desktop, via COM) to Claude"
+description = "MCP server exposing Microsoft Outlook (desktop) to Claude — Windows via COM, macOS via AppleScript"
 requires-python = ">=3.14"
 dependencies = [
     "mcp>=1.2.0",

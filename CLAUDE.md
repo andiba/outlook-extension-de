@@ -2,16 +2,22 @@
 
 ## Was ist dieses Repo?
 
-Lokale Claude-Erweiterungen (Extensions + Plugins) fuer Windows, die Claude mit Desktop-Anwendungen verbinden — ohne Cloud-APIs oder OAuth.
+Lokale Claude-Erweiterungen (Extensions + Plugins) fuer Windows **und macOS**, die Claude mit Desktop-Anwendungen verbinden — ohne Cloud-APIs oder OAuth.
 
 **Repo:** `andiba/outlook-extension-de` auf GitHub
 
 ## Enthaltene Erweiterungen
 
 ### Outlook (`outlook/` + `dxt/`)
-- **Claude Code Plugin** (`outlook/`): MCP-Server (Python/COM), Skill `outlook-assistant`, Slash-Commands (`/triage-inbox`, `/daily-digest`, `/draft-reply`, `/clean-inbox`)
+- **Claude Code Plugin** (`outlook/`): MCP-Server (Python), Skill `outlook-assistant`, Slash-Commands (`/triage-inbox`, `/daily-digest`, `/draft-reply`, `/clean-inbox`)
 - **Cowork Extension** (`dxt/`): `.mcpb`-Bundle, Build via `scripts/build-dxt.sh`
-- Voraussetzungen: Windows, Outlook Desktop, `uv`
+- **Cross-Platform-Architektur:**
+  - `outlook.py` — Plattform-Router (waehlt Backend per `sys.platform`)
+  - `outlook_win.py` — Windows-Backend, COM via `pywin32`
+  - `outlook_mac.py` — macOS-Backend, AppleScript/JXA via `osascript` (klassisches Outlook 16.x, **nicht** "New Outlook")
+  - `server.py` — FastMCP Tool-Definitionen, plattformunabhaengig
+- Voraussetzungen: Windows oder macOS, Outlook Desktop, `uv`
+- macOS: erste Ausfuehrung loest System-Dialog "Microsoft Outlook steuern" aus — einmal bestaetigen
 
 ### Obsidian (`obsidian/` + `obsidian-dxt/`)
 - **Claude Code Plugin** (`obsidian/`): stdio-MCP via `claude mcp add`
