@@ -362,6 +362,16 @@ def _recipient_smtp(recipient) -> str | None:
     return addr
 
 
+_RESPONSE_STATUS_MAP = {
+    0: "none",
+    1: "organized",
+    2: "tentative",
+    3: "accepted",
+    4: "declined",
+    5: "not_responded",
+}
+
+
 def _recipients_to_list(recipients) -> list[dict]:
     out = []
     for i in range(1, recipients.Count + 1):
@@ -371,6 +381,12 @@ def _recipients_to_list(recipients) -> list[dict]:
             entry["type"] = {1: "to", 2: "cc", 3: "bcc"}.get(r.Type)
         except Exception:
             pass
+        try:
+            entry["response"] = _RESPONSE_STATUS_MAP.get(
+                r.MeetingResponseStatus, "unknown"
+            )
+        except Exception:
+            entry["response"] = None
         out.append(entry)
     return out
 
