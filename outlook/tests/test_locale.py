@@ -21,7 +21,9 @@ sys.modules.setdefault("pywintypes", MagicMock())
 sys.modules.setdefault("win32com", MagicMock())
 sys.modules.setdefault("win32com.client", MagicMock())
 
-from outlook_mcp.outlook import (
+# Import from the Windows backend directly. The platform router (outlook.py)
+# only re-exports the public API, not these internal helpers.
+from outlook_mcp.outlook_win import (
     _format_filter_dt,
     _format_jet_filter_dt,
     _WIN_SHORT_DATE_FMT,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import datetime as _dt
+import functools
 import re
 from typing import Any, Iterable, Literal, Sequence
 
@@ -73,15 +74,103 @@ class OutlookError(Exception):
 
 _app = None
 _ns = None
+_com_initialized = False
+
+# HRESULTs, bei denen die gecachte COM-Referenz tot ist (Outlook neu gestartet)
+# und wir neu dispatchen müssen. Dezimalwerte, weil pywintypes.com_error das
+# HRESULT so in args[0] liefert.
+_STALE_COM_HRESULTS = frozenset({
+    -2147023174,  # 0x800706BA RPC_S_SERVER_UNAVAILABLE ("Der RPC-Server ist nicht verfügbar")
+    -2147417848,  # 0x80010108 RPC_E_DISCONNECTED (Objekt vom Client getrennt)
+    -2147220995,  # 0x800401FD CO_E_OBJNOTCONNECTED
+    -2146959355,  # 0x80080005 CO_E_SERVER_EXEC_FAILURE ("Server execution failed")
+})
+
+
+def _is_stale_com_error(e: pywintypes.com_error) -> bool:
+    """True, wenn der com_error auf eine tote/getrennte COM-Referenz hindeutet."""
+    hr = e.args[0] if e.args else None
+    if hr in _STALE_COM_HRESULTS:
+        return True
+    # Der eigentliche Code kann in EXCEPINFO (args[2][5], scode) stecken.
+    excepinfo = e.args[2] if len(e.args) > 2 else None
+    if excepinfo and len(excepinfo) >= 6 and excepinfo[5] in _STALE_COM_HRESULTS:
+        return True
+    return False
+
+
+def _ensure_com_initialized() -> None:
+    """CoInitialize genau einmal pro Prozess/Thread — idempotent."""
+    global _com_initialized
+    if not _com_initialized:
+        pythoncom.CoInitialize()
+        _com_initialized = True
+
+
+def _connect() -> None:
+    """(Neu-)Dispatch der Outlook.Application + MAPI-Namespace."""
+    global _app, _ns
+    _ensure_com_initialized()
+    _app = win32com.client.Dispatch("Outlook.Application")
+    _ns = _app.GetNamespace("MAPI")
+
+
+def _reset_connection() -> None:
+    """Gecachte COM-Referenzen verwerfen. CoInitialize bleibt bestehen."""
+    global _app, _ns
+    _app = None
+    _ns = None
 
 
 def _app_ns():
+    """Liefert (app, namespace) und baut die Verbindung bei Bedarf (neu) auf.
+
+    Führt einen billigen Health-Check (``_app.Version``) durch: nach einem
+    Outlook-Neustart zeigt die gecachte Referenz ins Leere, ohne selbst
+    ``None`` zu werden. Bei einem Stale-COM-Fehler wird neu dispatcht, sodass
+    der eigentliche Aufruf danach gegen ein lebendes Outlook läuft (und das
+    Retry-Budget von :func:`_with_reconnect` geschont bleibt).
+    """
     global _app, _ns
-    if _app is None:
-        pythoncom.CoInitialize()
-        _app = win32com.client.Dispatch("Outlook.Application")
-        _ns = _app.GetNamespace("MAPI")
+    if _app is None or _ns is None:
+        _connect()
+        return _app, _ns
+    try:
+        _ = _app.Version  # in-proc, billig
+    except pywintypes.com_error as e:
+        if not _is_stale_com_error(e):
+            raise
+        _reset_connection()
+        _connect()
     return _app, _ns
+
+
+def _with_reconnect(fn):
+    """Fängt Stale-COM-Fehler ab, verwirft die Referenzen und wiederholt EINMAL.
+
+    Ein Stale-Fehler bedeutet, dass der RPC das lebende Outlook nie erreicht
+    hat — die Operation ist also *nicht* ausgeführt worden. Deshalb ist ein
+    einmaliges Retry auch für mutierende Calls (send_email, move_email,
+    delete_email, Meeting-Invites) sicher; es droht kein Doppel-Versand.
+    Andere com_error werden unverändert durchgereicht.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except pywintypes.com_error as e:
+            if not _is_stale_com_error(e):
+                raise
+            _reset_connection()
+            try:
+                return fn(*args, **kwargs)
+            except pywintypes.com_error as e2:
+                hr = e2.args[0] if e2.args else "?"
+                raise OutlookError(
+                    "Verbindung zu Outlook verloren und Reconnect fehlgeschlagen "
+                    f"— läuft Outlook? (COM-Fehler {hr})"
+                ) from e2
+    return wrapper
 
 
 def _to_iso(val: Any) -> str | None:
@@ -313,6 +402,8 @@ def _get_item(entry_id: str, store_id: str | None = None):
             return ns.GetItemFromID(entry_id, store_id)
         return ns.GetItemFromID(entry_id)
     except pywintypes.com_error as e:
+        if _is_stale_com_error(e):
+            raise  # Reconnect-Wrapper / Health-Check kümmern sich darum
         raise OutlookError(f"Item not found (entry_id={entry_id!r}): {e}") from e
 
 
@@ -470,6 +561,7 @@ def _event_summary(appt) -> dict:
 
 # ---------- Accounts / folders ----------
 
+@_with_reconnect
 def list_accounts() -> list[dict]:
     app, ns = _app_ns()
     out = []
@@ -483,6 +575,7 @@ def list_accounts() -> list[dict]:
     return out
 
 
+@_with_reconnect
 def list_folders(account: str | None = None, recursive: bool = True) -> list[dict]:
     _, ns = _app_ns()
 
@@ -519,6 +612,7 @@ def _folder_path(folder) -> str:
 
 # ---------- Email ----------
 
+@_with_reconnect
 def list_emails(
     folder: str | None = None,
     limit: int = 50,
@@ -572,10 +666,12 @@ def list_emails(
     return out
 
 
+@_with_reconnect
 def read_email(entry_id: str, store_id: str | None = None) -> dict:
     return _email_full(_get_item(entry_id, store_id))
 
 
+@_with_reconnect
 def search_emails(
     query: str,
     folder: str | None = None,
@@ -606,6 +702,7 @@ def search_emails(
     return out
 
 
+@_with_reconnect
 def move_email(entry_id: str, target_folder: str, store_id: str | None = None) -> dict:
     item = _get_item(entry_id, store_id)
     target = _resolve_folder(target_folder)
@@ -614,6 +711,7 @@ def move_email(entry_id: str, target_folder: str, store_id: str | None = None) -
             "folder": target_folder}
 
 
+@_with_reconnect
 def delete_email(entry_id: str, store_id: str | None = None,
                  permanent: bool = False) -> dict:
     item = _get_item(entry_id, store_id)
@@ -633,6 +731,7 @@ def delete_email(entry_id: str, store_id: str | None = None,
 _REPLY_MODES = {"reply", "reply_all", "forward"}
 
 
+@_with_reconnect
 def create_draft(
     to: Sequence[str] | None = None,
     cc: Sequence[str] | None = None,
@@ -688,6 +787,7 @@ def create_draft(
     return _email_full(draft)
 
 
+@_with_reconnect
 def update_draft(
     entry_id: str,
     store_id: str | None = None,
@@ -726,6 +826,7 @@ def update_draft(
     return _email_full(draft)
 
 
+@_with_reconnect
 def send_email(
     entry_id: str | None = None,
     store_id: str | None = None,
@@ -771,6 +872,7 @@ def send_email(
 
 # ---------- Categories ----------
 
+@_with_reconnect
 def list_categories() -> list[dict]:
     _, ns = _app_ns()
     cats = ns.Categories
@@ -801,6 +903,7 @@ def _apply_categories(item, categories: Sequence[str], mode: str):
     return new
 
 
+@_with_reconnect
 def set_email_categories(
     entry_id: str,
     categories: Sequence[str],
@@ -812,6 +915,7 @@ def set_email_categories(
     return {"entry_id": entry_id, "categories": new}
 
 
+@_with_reconnect
 def set_event_categories(
     entry_id: str,
     categories: Sequence[str],
@@ -825,6 +929,7 @@ def set_event_categories(
 
 # ---------- Calendar ----------
 
+@_with_reconnect
 def list_calendar_events(
     start: str,
     end: str,
@@ -865,6 +970,7 @@ def list_calendar_events(
     return out
 
 
+@_with_reconnect
 def create_calendar_event(
     subject: str,
     start: str,
@@ -907,6 +1013,7 @@ def create_calendar_event(
     return _event_summary(appt)
 
 
+@_with_reconnect
 def update_calendar_event(
     entry_id: str,
     store_id: str | None = None,
@@ -942,12 +1049,14 @@ def update_calendar_event(
     return _event_summary(appt)
 
 
+@_with_reconnect
 def delete_calendar_event(entry_id: str, store_id: str | None = None) -> dict:
     appt = _get_item(entry_id, store_id)
     appt.Delete()
     return {"deleted": True}
 
 
+@_with_reconnect
 def respond_to_invite(
     entry_id: str,
     response: Literal["accept", "tentative", "decline"],

@@ -17,8 +17,22 @@ cd "$REPO_ROOT"
 # Use python's json parser instead of grep+sed: macOS BSD sed does not
 # support \s, and a regex over the manifest is also fragile because the
 # substring "version" appears inside the multi-line "long_description"
-# field. python3 ships with macOS and is available everywhere bash runs.
-VERSION=$(python3 -c 'import json; print(json.load(open("dxt/manifest.json"))["version"])')
+# field. Prefer python3 (macOS/Linux); fall back to python on Windows
+# Git Bash. We probe each candidate by actually running it — on Windows
+# a bare "python3" is a Microsoft Store alias stub that exists on PATH
+# but fails when executed, so a plain "command -v" check is not enough.
+PYTHON=""
+for _cand in python3 python; do
+  if "$_cand" -c 'import sys' >/dev/null 2>&1; then
+    PYTHON="$_cand"
+    break
+  fi
+done
+if [[ -z "$PYTHON" ]]; then
+  echo "error: no working python3/python on PATH" >&2
+  exit 1
+fi
+VERSION=$("$PYTHON" -c 'import json; print(json.load(open("dxt/manifest.json"))["version"])')
 OUTPUT="outlook-${VERSION}.mcpb"
 
 echo "==> Cleaning bundle"
