@@ -731,6 +731,21 @@ def delete_email(entry_id: str, store_id: str | None = None,
 _REPLY_MODES = {"reply", "reply_all", "forward"}
 
 
+def _resolve_recipients(item) -> None:
+    """Resolve To/CC/BCC against the address book before saving/sending.
+
+    Setting .To/.CC/.BCC as plain strings stores unresolved one-off
+    recipients. Internal (Exchange) addresses then show up red in
+    Outlook/OWA ("could not be resolved") until the user clicks them.
+    ResolveAll turns them into proper address-book entries; external
+    addresses stay SMTP one-offs. Failures are not fatal.
+    """
+    try:
+        item.Recipients.ResolveAll()
+    except Exception:
+        pass
+
+
 @_with_reconnect
 def create_draft(
     to: Sequence[str] | None = None,
@@ -783,6 +798,8 @@ def create_draft(
     if categories is not None:
         draft.Categories = ",".join(categories)
 
+    if to or cc or bcc:
+        _resolve_recipients(draft)
     draft.Save()
     return _email_full(draft)
 
@@ -822,6 +839,8 @@ def update_draft(
         draft.Importance = OL_IMPORTANCE[importance]
     if categories is not None:
         draft.Categories = ",".join(categories)
+    if to is not None or cc is not None or bcc is not None:
+        _resolve_recipients(draft)
     draft.Save()
     return _email_full(draft)
 
@@ -865,6 +884,7 @@ def send_email(
     # Capture before Send — after Send the COM reference becomes invalid
     # ("The item has been moved or deleted.")
     subject_sent = draft.Subject
+    _resolve_recipients(draft)
     to_sent = draft.To
     draft.Send()
     return {"sent": True, "subject": subject_sent, "to": to_sent}
