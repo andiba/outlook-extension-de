@@ -294,15 +294,60 @@ function resolveFolder(ol, path) {
       catch (e) { throw new Error("Account has no " + second + ": " + parts[0]); }
       return walkSubfolders(root, parts.slice(2));
     }
-    let root;
-    try { root = acc.inbox(); }
-    catch (e) { throw new Error("Account has no inbox: " + parts[0]); }
-    return walkSubfolders(root, parts.slice(1));
+    let inbox = null;
+    try { inbox = acc.inbox(); } catch (e) { /* no inbox: top level only */ }
+    const hit = walkFromParents(inbox ? [inbox] : [], parts.slice(1)) ||
+                walkFromSiblings(listToArray(acc.mailFolders()), parts.slice(1));
+    if (hit) return hit;
+    throw new Error("Folder not found: " + path +
+                    " (looked below the Inbox and among the account's top-level folders)");
   }
-  // Fallback: walk from default inbox
-  const root = defaultStandardFolder(ol, "inbox");
-  if (!root) throw new Error("No default Inbox; cannot resolve path: " + path);
-  return walkSubfolders(root, parts);
+  // Fallback: below the default Inbox first (old behaviour), then among the
+  // top-level folders — "HR/Urlaubsanträge" usually sits next to the Inbox,
+  // not inside it.
+  const inbox = defaultStandardFolder(ol, "inbox");
+  const hit = walkFromParents(inbox ? [inbox] : [], parts) ||
+              walkFromSiblings(topLevelFolders(ol), parts);
+  if (hit) return hit;
+  throw new Error("Folder not found: " + path +
+                  " (looked below the Inbox and among the top-level folders)");
+}
+
+// First match of `parts` below any of `parents`, or null.
+function walkFromParents(parents, parts) {
+  for (const p of parents) {
+    try { return walkSubfolders(p, parts); } catch (e) { /* next */ }
+  }
+  return null;
+}
+
+// First match where parts[0] is one of `folders` itself, or null.
+function walkFromSiblings(folders, parts) {
+  const ln = parts[0].toLowerCase();
+  for (const f of folders) {
+    if ((safeGet(f, "name") || "").toLowerCase() !== ln) continue;
+    try { return walkSubfolders(f, parts.slice(1)); } catch (e) { /* next */ }
+  }
+  return null;
+}
+
+// Top-level mail folders: default account first, then the other accounts,
+// then "On My Computer".
+function topLevelFolders(ol) {
+  const out = [];
+  const def = defaultAccount(ol);
+  if (def) { try { out.push(...listToArray(def.mailFolders())); } catch (e) {} }
+  const accs = []
+    .concat(listToArray(ol.exchangeAccounts()))
+    .concat(listToArray(ol.imapAccounts()))
+    .concat(listToArray(ol.popAccounts()));
+  const defName = def ? safeGet(def, "name") : null;
+  for (const a of accs) {
+    if (defName && safeGet(a, "name") === defName) continue;
+    try { out.push(...listToArray(a.mailFolders())); } catch (e) {}
+  }
+  try { out.push(...listToArray(ol.mailFolders())); } catch (e) {}
+  return out;
 }
 
 function categoriesOf(item) {
@@ -500,17 +545,20 @@ const HANDLERS = {
   },
 
   list_folders(args, ol) {
-    const collect = function(folder, depth, out) {
+    // `path` is what folder= accepts: "HR/Urlaubsanträge".
+    const collect = function(folder, depth, out, parent) {
+      const name = safeGet(folder, "name");
+      const path = parent ? parent + "/" + name : name;
       out.push({
-        name: safeGet(folder, "name"),
-        path: depth === 0 ? safeGet(folder, "name") : null,
+        name: name,
+        path: path,
         unread: safeGet(folder, "unreadCount"),
         total: safeGet(folder, "totalCount"),
         depth: depth,
       });
       if (args.recursive !== false) {
         for (const sub of listToArray(folder.mailFolders())) {
-          collect(sub, depth + 1, out);
+          collect(sub, depth + 1, out, path);
         }
       }
     };
@@ -1553,8 +1601,11 @@ def _list_emails_spotlight(
     epoch = _dt.datetime.min.replace(tzinfo=_UTC)
     rows.sort(key=lambda r: _md_utc(r.get(_MDP + "messageReceived")) or epoch,
               reverse=newest_first)
-    rows = rows[:limit]
+    return _mail_summaries(rows[:limit], ctx)
 
+
+def _mail_summaries(rows: list[dict], ctx: dict) -> list[dict]:
+    """Spotlight rows -> the dicts list_emails/search_emails return."""
     ids = [str(r.get(_MDP + "recordID")) for r in rows if r.get(_MDP + "recordID") is not None]
     extras = _run_jxa("email_extras", {"ids": ids}) if ids else {}
     cats = ctx.get("categories") or {}
@@ -1578,6 +1629,57 @@ def _list_emails_spotlight(
             "preview": ex.get("preview", ""),
         })
     return out
+
+
+def _md_quote(text: str) -> str:
+    """Escape user text for a quoted mdfind value with * wildcards around it."""
+    out = []
+    for ch in text:
+        if ch in '\\"*?':
+            out.append("\\" + ch)
+        elif ch in "\r\n\t":
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _search_query(folder_q: str, query: str) -> str:
+    """Folder AND (text OR subject OR sender name OR sender address), like the
+    JXA scan: case- and diacritics-insensitive substring match."""
+    v = '"*' + _md_quote(query) + '*"cd'
+    fields = ["kMDItemTextContent", "kMDItemDisplayName", "kMDItemAuthors",
+              _MDP + "author_email_addresses"]
+    return folder_q + " && (" + " || ".join(f"{f} == {v}" for f in fields) + ")"
+
+
+def _search_emails_spotlight(query: str, folder: str | None, limit: int) -> list[dict]:
+    ctx = _run_jxa("spotlight_mail_context", {"folder": folder})
+    fid = ctx.get("id")
+    if fid is None:
+        raise _SpotlightUnavailable("folder has no id")
+    folder_q = f'kMDItemContentType == "{_MD_MESSAGE}" && {_MDP}folderID == {int(fid)}'
+    q = _search_query(folder_q, query)
+
+    # Newest first, in growing windows: a common word can hit thousands of
+    # mails, and mdls per hit is the expensive part.
+    now = _dt.datetime.now(_UTC)
+    windows: list[_dt.datetime | None] = [now - _dt.timedelta(days=d) for d in (30, 365)]
+    windows.append(None)
+    rows: list[dict] = []
+    for lo in windows:
+        wq = q if lo is None else q + f" && {_MDP}messageReceived >= {_md_time(lo)}"
+        rows = _mdls(_mdfind(wq), _MAIL_ATTRS)
+        if len(rows) >= limit:
+            break
+
+    if not rows and (ctx.get("count") or 0) > 0 and _mdfind_count(folder_q) == 0:
+        raise _SpotlightUnavailable("folder not in Spotlight index")
+
+    epoch = _dt.datetime.min.replace(tzinfo=_UTC)
+    rows.sort(key=lambda r: _md_utc(r.get(_MDP + "messageReceived")) or epoch,
+              reverse=True)
+    return _mail_summaries(rows[:limit], ctx)
 
 
 _EVENT_ATTRS = [
@@ -1760,6 +1862,11 @@ def read_email(entry_id: str, store_id: str | None = None) -> dict:
 
 
 def search_emails(query: str, folder: str | None = None, limit: int = 50) -> list[dict]:
+    if query and _spotlight_enabled():
+        try:
+            return _search_emails_spotlight(query, _canonical_folder_path(folder), limit)
+        except _SpotlightUnavailable:
+            pass
     return _run_jxa("search_emails", {
         "query": query,
         "folder": _canonical_folder_path(folder),
