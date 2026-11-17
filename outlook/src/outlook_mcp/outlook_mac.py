@@ -17,9 +17,19 @@ account scoping through the folder path instead.
 - DASL-level full-text search is not available; ``search_emails``
   performs a JXA ``whose``-filter scan and may be slower than the
   Windows version on very large folders.
-- ``list_calendar_events`` expands recurrences via the AppleScript
-  ``expand``/``occurrence`` plumbing.
-- **Shared / delegated calendars are not readable.** Colleagues'
+- ``list_emails`` and ``list_calendar_events`` select items through
+  Spotlight (see "Spotlight fast path" below) and read only the hits via
+  AppleScript: seconds instead of minutes/hours on large mailboxes.
+  Recurring events are expanded from the RRULE Spotlight stores
+  (python-dateutil); a changed occurrence is replaced by its exception
+  record, an occurrence deleted from a series cannot be detected. Mail
+  that arrived seconds ago may be missing until Spotlight indexed it.
+  Without Spotlight the JXA path runs (bulk-fetches receive times; the
+  calendar fallback does NOT expand recurrences — Outlook's dictionary
+  has no ``expand`` for events).
+- **Shared / delegated calendars are not readable via AppleScript.** The
+  Spotlight path lists them by name (``calendar="Philipp Schulze"``);
+  body and organizer may then be empty. Colleagues'
   calendars that you have permission to view show up in
   ``ol.calendars()`` (with name + account), but ``calendarEvents`` on
   them returns an empty list. Outlook for Mac fetches those events via
@@ -34,9 +44,16 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
+import plistlib
 import re
 import subprocess
+from pathlib import Path
 from typing import Any, Literal, Sequence
+
+# Upper bound for one osascript call. A JXA scan of a very large folder can
+# otherwise block the MCP server indefinitely.
+_OSASCRIPT_TIMEOUT = int(os.environ.get("OUTLOOK_MCP_TIMEOUT", "180"))
 
 
 class OutlookError(Exception):
@@ -340,10 +357,7 @@ function emailSummary(m) {
   let hasAttachments = false;
   try { hasAttachments = m.attachments().length > 0; } catch (e) {}
   let importance = "normal";
-  try {
-    const p = safeGet(m, "priority");
-    if (p === "high" || p === "low") importance = p;
-  } catch (e) {}
+  try { importance = priorityName(safeGet(m, "priority")); } catch (e) {}
   return {
     entry_id: id != null ? String(id) : null,
     store_id: null,
@@ -423,7 +437,7 @@ function eventSummary(ev) {
     all_day: !!safeGet(ev, "allDayFlag"),
     body: safeGet(ev, "plainTextContent") || safeGet(ev, "content") || "",
     categories: categoriesOf(ev),
-    organizer: safeGet(safeGet(ev, "organizer"), "address") || null,
+    organizer: organizerOf(ev),
     is_recurring: !!safeGet(ev, "isRecurring"),
   };
 }
@@ -527,26 +541,35 @@ const HANDLERS = {
   list_emails(args, ol) {
     const folder = resolveFolder(ol, args.folder);
     const limit = args.limit || 50;
-    let msgs = listToArray(folder.messages());
-    // sort
-    msgs.sort(function(a, b) {
-      const ta = safeGet(a, "timeReceived");
-      const tb = safeGet(b, "timeReceived");
-      const va = ta ? ta.getTime() : 0;
-      const vb = tb ? tb.getTime() : 0;
-      return args.newest_first === false ? va - vb : vb - va;
-    });
     const since = args.since ? new Date(args.since) : null;
     const before = args.before ? new Date(args.before) : null;
+    // Fallback path (Spotlight unavailable). Fetch all receive times in ONE
+    // Apple Event, filter and sort in JS, then touch only the hits. The old
+    // code sorted message references and read timeReceived per comparison
+    // (~2·n·log n Apple Events at ~16 ms each: hours on a 36k inbox).
+    const spec = folder.messages;
+    let times = [];
+    try { times = spec.timeReceived(); } catch (e) { times = []; }
+    let idx = [];
+    for (let i = 0; i < times.length; i++) {
+      const t = times[i];
+      if (since && t && t < since) continue;
+      if (before && t && t >= before) continue;
+      idx.push(i);
+    }
+    idx.sort(function(a, b) {
+      const va = times[a] ? times[a].getTime() : 0;
+      const vb = times[b] ? times[b].getTime() : 0;
+      return args.newest_first === false ? va - vb : vb - va;
+    });
+    const msgs = [];
+    for (const i of idx) { try { msgs.push(spec[i]); } catch (e) {} }
     const fromQ = args.from_filter ? args.from_filter.toLowerCase() : null;
     const subjQ = args.subject_filter ? args.subject_filter.toLowerCase() : null;
     const out = [];
     for (const m of msgs) {
       if (out.length >= limit) break;
       if (args.unread_only && safeGet(m, "isRead")) continue;
-      const t = safeGet(m, "timeReceived");
-      if (since && t && t < since) continue;
-      if (before && t && t >= before) continue;
       if (subjQ) {
         const s = (safeGet(m, "subject") || "").toLowerCase();
         if (s.indexOf(subjQ) === -1) continue;
@@ -812,7 +835,87 @@ const HANDLERS = {
     }
     return { ok: true, response: r, sent: send };
   },
+
+  // ---- helpers for the Spotlight fast path (see _spotlight_* in Python) --
+
+  spotlight_mail_context(args, ol) {
+    const f = resolveFolder(ol, args.folder);
+    let count = -1;
+    try { count = f.messages.length; } catch (e) {}
+    const cats = {};
+    try {
+      const c = ol.categories;
+      const ids = c.id(), names = c.name();
+      for (let i = 0; i < ids.length; i++) cats[String(ids[i])] = names[i];
+    } catch (e) {}
+    return { id: safeGet(f, "id"), name: safeGet(f, "name"), count: count, categories: cats };
+  },
+
+  spotlight_calendar_context(args, ol) {
+    const out = { calendars: [], categories: {} };
+    try {
+      const c = ol.calendars;
+      const ids = c.id(), names = c.name();
+      for (let i = 0; i < ids.length; i++) out.calendars.push({ id: ids[i], name: names[i] });
+    } catch (e) {}
+    try {
+      const c = ol.categories;
+      const ids = c.id(), names = c.name();
+      for (let i = 0; i < ids.length; i++) out.categories[String(ids[i])] = names[i];
+    } catch (e) {}
+    return out;
+  },
+
+  email_extras(args, ol) {
+    const out = {};
+    for (const id of (args.ids || [])) {
+      let m;
+      try { m = ol.messages.byId(parseInt(id, 10)); m.subject(); }
+      catch (e) { try { m = getMessageById(ol, String(id)); } catch (e2) { continue; } }
+      const p = safeGet(m, "priority");
+      let preview = "";
+      if (args.preview !== false) {
+        try {
+          const body = safeGet(m, "plainTextContent") || "";
+          preview = String(body).slice(0, 200).replace(/\r\n/g, "\n").trim();
+        } catch (e) {}
+      }
+      out[String(id)] = { importance: priorityName(p), preview: preview };
+    }
+    return out;
+  },
+
+  event_extras(args, ol) {
+    const out = {};
+    for (const id of (args.ids || [])) {
+      let ev = null;
+      try { ev = ol.calendarEvents.byId(parseInt(id, 10)); ev.subject(); }
+      catch (e) { ev = null; }
+      if (!ev) continue;
+      out[String(id)] = {
+        location: safeGet(ev, "location"),
+        organizer: organizerOf(ev),
+        body: args.body === false ? "" : (safeGet(ev, "plainTextContent") || ""),
+      };
+    }
+    return out;
+  },
 };
+
+function organizerOf(ev) {
+  // Outlook returns the organizer as a plain address string; older code
+  // expected an object with .address and therefore always got null.
+  const o = safeGet(ev, "organizer");
+  if (o == null) return null;
+  if (typeof o === "string") return o || null;
+  try { return o.address || null; } catch (e) { return null; }
+}
+
+function priorityName(p) {
+  if (p === "priority high" || p === "high") return "high";
+  if (p === "priority low" || p === "low") return "low";
+  return "normal";
+}
 
 function _setCategories(ol, item, args) {
   const requested = [];
@@ -875,10 +978,16 @@ def _run_applescript(src: str) -> str:
     and meeting-attendee creation. Each call is its own process so JXA
     state never co-exists with NSAppleScript state.
     """
-    proc = subprocess.run(
-        ["osascript", "-e", src],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", src],
+            capture_output=True, text=True, check=False,
+            timeout=_OSASCRIPT_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise OutlookError(
+            f"AppleScript timed out after {_OSASCRIPT_TIMEOUT}s"
+        ) from e
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         raise OutlookError(f"AppleScript failed: {stderr or proc.stdout!r}")
@@ -1210,9 +1319,15 @@ def _run_jxa(cmd: str, args: dict | None = None) -> Any:
         proc = subprocess.run(
             ["osascript", "-l", "JavaScript", "-e", _JXA_DISPATCH, payload],
             capture_output=True, text=True, check=False,
+            timeout=_OSASCRIPT_TIMEOUT,
         )
     except FileNotFoundError as e:
         raise OutlookError("osascript not found — macOS only backend") from e
+    except subprocess.TimeoutExpired as e:
+        raise OutlookError(
+            f"Outlook did not answer within {_OSASCRIPT_TIMEOUT}s ({cmd}). "
+            "Set OUTLOOK_MCP_TIMEOUT to allow more time."
+        ) from e
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         if "execution error" in stderr.lower() and "-1743" in stderr:
@@ -1232,6 +1347,369 @@ def _run_jxa(cmd: str, args: dict | None = None) -> Any:
     if not envelope.get("ok"):
         raise OutlookError(envelope.get("error", "unknown JXA error"))
     return envelope.get("result")
+
+
+# ---- Spotlight fast path -------------------------------------------------
+#
+# Classic Outlook for Mac keeps every message and event as a file in its
+# profile, and Spotlight indexes their metadata: record id, folder id,
+# dates, sender, unread flag, recurrence rule. One ``mdfind`` answers
+# "what arrived in folder Y since X" in well under a second. AppleScript
+# needs one Apple Event (~16 ms) per item AND property, which made
+# list_emails/list_calendar_events take minutes to hours on large
+# mailboxes. AppleScript is now used only for the few hits afterwards
+# (preview, priority, organizer, body). If Spotlight is unavailable (index
+# off, profile elsewhere, OUTLOOK_MCP_SPOTLIGHT=0) the JXA path runs.
+
+_OUTLOOK_DATA = Path(os.environ.get(
+    "OUTLOOK_MCP_PROFILE_DIR",
+    str(Path.home() / "Library/Group Containers/UBF8T346G9.Office/Outlook"),
+))
+_MD_MESSAGE = "com.microsoft.outlook15.message"
+_MD_EVENT = "com.microsoft.outlook15.event"
+_MDP = "com_microsoft_outlook_"
+_SPOTLIGHT_TIMEOUT = 30
+_UTC = _dt.timezone.utc
+
+
+class _SpotlightUnavailable(Exception):
+    """Spotlight cannot answer — fall back to the JXA path."""
+
+
+def _spotlight_enabled() -> bool:
+    return (os.environ.get("OUTLOOK_MCP_SPOTLIGHT", "1") != "0"
+            and _OUTLOOK_DATA.is_dir())
+
+
+def _to_utc(dt: _dt.datetime) -> _dt.datetime:
+    # A naive value is local wall time, exactly as JS `new Date(iso)` read it.
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt.astimezone(_UTC)
+
+
+def _md_time(dt: _dt.datetime) -> str:
+    return "$time.iso(" + _to_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ") + ")"
+
+
+def _md_iso(val: Any) -> str | None:
+    """plistlib dates are naive UTC; format like JS toISOString()."""
+    if not isinstance(val, _dt.datetime):
+        return None
+    if val.tzinfo is not None:
+        val = val.astimezone(_UTC).replace(tzinfo=None)
+    return val.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _md_utc(val: Any) -> _dt.datetime | None:
+    if not isinstance(val, _dt.datetime):
+        return None
+    return val.replace(tzinfo=_UTC) if val.tzinfo is None else val.astimezone(_UTC)
+
+
+def _mdfind(query: str) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["mdfind", "-onlyin", str(_OUTLOOK_DATA), query],
+            capture_output=True, text=True, check=False,
+            timeout=_SPOTLIGHT_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise _SpotlightUnavailable(str(e)) from e
+    if proc.returncode != 0:
+        raise _SpotlightUnavailable((proc.stderr or "").strip())
+    return [p for p in proc.stdout.splitlines() if p]
+
+
+def _mdfind_count(query: str) -> int:
+    try:
+        proc = subprocess.run(
+            ["mdfind", "-count", "-onlyin", str(_OUTLOOK_DATA), query],
+            capture_output=True, text=True, check=False,
+            timeout=_SPOTLIGHT_TIMEOUT,
+        )
+        return int((proc.stdout or "0").strip() or 0)
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError) as e:
+        raise _SpotlightUnavailable(str(e)) from e
+
+
+def _mdls_run(paths: list[str], names: list[str]) -> list[dict] | None:
+    try:
+        proc = subprocess.run(
+            ["mdls", "-plist", "-", *names, *paths],
+            capture_output=True, check=False, timeout=_SPOTLIGHT_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise _SpotlightUnavailable(str(e)) from e
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    try:
+        data = plistlib.loads(proc.stdout)
+    except Exception:
+        return None
+    return [data] if isinstance(data, dict) else list(data)
+
+
+def _mdls(paths: list[str], attrs: Sequence[str]) -> list[dict]:
+    """Read Spotlight attributes of many files in few mdls calls."""
+    names: list[str] = []
+    for a in attrs:
+        names += ["-name", a]
+    out: list[dict] = []
+    for i in range(0, len(paths), 400):
+        chunk = paths[i:i + 400]
+        rows = _mdls_run(chunk, names)
+        if rows is None:
+            # A file vanished between mdfind and mdls (mail moved/deleted):
+            # read one by one and skip what is gone.
+            rows = []
+            for p in chunk:
+                r = _mdls_run([p], names)
+                if r:
+                    rows.extend(r)
+        out.extend(rows)
+    return out
+
+
+def _first(val: Any) -> Any:
+    if isinstance(val, (list, tuple)):
+        return val[0] if val else None
+    return val
+
+
+def _category_names(val: Any, names: dict) -> list[str]:
+    out = []
+    for c in (val or []):
+        n = names.get(str(c))
+        if c and n and n not in out:
+            out.append(n)
+    return out
+
+
+def _display_name(row: dict) -> str | None:
+    n = row.get("kMDItemDisplayName") or row.get("kMDItemTitle")
+    if not n or str(n).endswith((".olk15Message", ".olk15Event")):
+        return None
+    return n
+
+
+_MAIL_ATTRS = [
+    _MDP + "recordID", _MDP + "messageReceived", _MDP + "messageSent",
+    _MDP + "unread", _MDP + "has_attachments", _MDP + "categories",
+    _MDP + "author_email_addresses", "kMDItemAuthors", "kMDItemDisplayName",
+]
+
+
+def _list_emails_spotlight(
+    folder: str | None, limit: int, unread_only: bool,
+    from_filter: str | None, subject_filter: str | None,
+    since: str | None, before: str | None, newest_first: bool,
+) -> list[dict]:
+    ctx = _run_jxa("spotlight_mail_context", {"folder": folder})
+    fid = ctx.get("id")
+    if fid is None:
+        raise _SpotlightUnavailable("folder has no id")
+    folder_q = f'kMDItemContentType == "{_MD_MESSAGE}" && {_MDP}folderID == {int(fid)}'
+    base = folder_q + (f" && {_MDP}unread == 1" if unread_only else "")
+    since_dt = _parse_iso(since) if since else None
+    before_dt = _parse_iso(before) if before else None
+    subj_q = (subject_filter or "").lower() or None
+    from_q = (from_filter or "").lower() or None
+
+    def matches(r: dict) -> bool:
+        if subj_q and subj_q not in (_display_name(r) or "").lower():
+            return False
+        if from_q:
+            who = " ".join(str(x) for x in (r.get("kMDItemAuthors") or [])
+                           + (r.get(_MDP + "author_email_addresses") or []))
+            if from_q not in who.lower():
+                return False
+        return True
+
+    # Without `since`, look back in growing windows: the newest 50 of a
+    # 36k inbox should not mean reading 36k index entries.
+    if since_dt is not None or not newest_first:
+        windows: list[_dt.datetime | None] = [since_dt]
+    else:
+        anchor = _to_utc(before_dt) if before_dt else _dt.datetime.now(_UTC)
+        windows = [anchor - _dt.timedelta(days=d) for d in (7, 30, 120, 400)]
+        windows.append(None)
+
+    rows: list[dict] = []
+    for lo in windows:
+        q = base
+        if lo is not None:
+            q += f" && {_MDP}messageReceived >= {_md_time(lo)}"
+        if before_dt is not None:
+            q += f" && {_MDP}messageReceived < {_md_time(before_dt)}"
+        rows = [r for r in _mdls(_mdfind(q), _MAIL_ATTRS) if matches(r)]
+        if len(rows) >= limit:
+            break
+
+    if not rows and (ctx.get("count") or 0) > 0 and _mdfind_count(folder_q) == 0:
+        # Outlook has mail there, Spotlight knows none: index missing.
+        raise _SpotlightUnavailable("folder not in Spotlight index")
+
+    epoch = _dt.datetime.min.replace(tzinfo=_UTC)
+    rows.sort(key=lambda r: _md_utc(r.get(_MDP + "messageReceived")) or epoch,
+              reverse=newest_first)
+    rows = rows[:limit]
+
+    ids = [str(r.get(_MDP + "recordID")) for r in rows if r.get(_MDP + "recordID") is not None]
+    extras = _run_jxa("email_extras", {"ids": ids}) if ids else {}
+    cats = ctx.get("categories") or {}
+    out = []
+    for r in rows:
+        rid = r.get(_MDP + "recordID")
+        ex = extras.get(str(rid), {})
+        out.append({
+            "entry_id": str(rid) if rid is not None else None,
+            "store_id": None,
+            "subject": _display_name(r),
+            "sender_name": _first(r.get("kMDItemAuthors")),
+            "sender_email": _first(r.get(_MDP + "author_email_addresses")),
+            "received_time": _md_iso(r.get(_MDP + "messageReceived")),
+            "sent_time": _md_iso(r.get(_MDP + "messageSent")),
+            "unread": bool(r.get(_MDP + "unread")),
+            "has_attachments": bool(r.get(_MDP + "has_attachments")),
+            "categories": _category_names(r.get(_MDP + "categories"), cats),
+            "importance": ex.get("importance", "normal"),
+            "folder": ctx.get("name"),
+            "preview": ex.get("preview", ""),
+        })
+    return out
+
+
+_EVENT_ATTRS = [
+    _MDP + "recordID", _MDP + "startDate", _MDP + "endDate", _MDP + "allDay",
+    _MDP + "recurring", _MDP + "recurrence", _MDP + "categories",
+    _MDP + "parentRecordID",
+    "kMDItemDisplayName", "kMDItemTitle", "kMDItemCoverage",
+]
+_UNTIL_UTC = re.compile(r"UNTIL=(\d{8}T\d{6})Z")
+
+
+def _pick_calendars(cals: list[dict], name: str | None) -> list[int]:
+    if name:
+        ln = name.lower()
+        ids = [c["id"] for c in cals if (c.get("name") or "").lower() == ln]
+        if not ids:
+            # Could be an account name — the JXA path knows how to map it.
+            raise _SpotlightUnavailable("calendar name not found")
+        return ids
+    # The user's own calendar: an unnamed or "Calendar"/"Kalender" folder,
+    # whichever holds the most events. Shared colleague calendars are
+    # bigger and must not win.
+    cands = [c for c in cals
+             if (c.get("name") or "").lower() in ("", "calendar", "kalender")]
+    best, best_n = None, 0
+    for c in cands:
+        n = _mdfind_count(
+            f'kMDItemContentType == "{_MD_EVENT}" && {_MDP}folderID == {int(c["id"])}')
+        if n > best_n:
+            best, best_n = c["id"], n
+    if best is None:
+        raise _SpotlightUnavailable("no own calendar in Spotlight index")
+    return [best]
+
+
+def _expand_recurring(row: dict, ws: _dt.datetime, we: _dt.datetime,
+                      skip_days: set | frozenset = frozenset(),
+                      ) -> list[tuple[_dt.datetime, _dt.datetime]]:
+    """Occurrences of a recurring master overlapping [ws, we) (UTC).
+
+    ``skip_days`` holds local dates on which the series has an exception
+    record of its own (a changed occurrence, ``parentRecordID`` = master);
+    that record is listed instead. Occurrences deleted from a series leave
+    no record in the index and cannot be filtered out here.
+    """
+    from dateutil.rrule import rrulestr  # local import: macOS-only dependency
+
+    s = _md_utc(row.get(_MDP + "startDate"))
+    e = _md_utc(row.get(_MDP + "endDate"))
+    rule = row.get(_MDP + "recurrence")
+    if s is None or e is None or not rule:
+        return []
+    dur = e - s
+    # Recurrence rules run in local wall time (BYDAY, DST); UNTIL is either
+    # floating local or UTC — normalize to floating local.
+    s_loc = s.astimezone().replace(tzinfo=None)
+
+    def _until_local(m: re.Match) -> str:
+        u = _dt.datetime.strptime(m.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=_UTC)
+        return "UNTIL=" + u.astimezone().strftime("%Y%m%dT%H%M%S")
+
+    rule = _UNTIL_UTC.sub(_until_local, rule)
+    ws_loc = ws.astimezone().replace(tzinfo=None)
+    we_loc = we.astimezone().replace(tzinfo=None)
+    try:
+        rr = rrulestr(rule, dtstart=s_loc)
+        hits = rr.between(ws_loc - dur, we_loc, inc=True)
+    except Exception:
+        hits = [s_loc] if s < we and e > ws else []
+    out = []
+    for occ in hits:
+        if occ.date() in skip_days:
+            continue
+        o_s = occ.astimezone(_UTC)  # naive local -> aware via system tz
+        o_e = o_s + dur
+        if o_s < we and o_e > ws:
+            out.append((o_s, o_e))
+    return out
+
+
+def _list_calendar_spotlight(start: str, end: str, calendar: str | None,
+                             limit: int) -> list[dict]:
+    ws = _to_utc(_parse_iso(start))
+    we = _to_utc(_parse_iso(end))
+    ctx = _run_jxa("spotlight_calendar_context", {})
+    fids = _pick_calendars(ctx.get("calendars") or [], calendar)
+    cats = ctx.get("categories") or {}
+    found: list[tuple[_dt.datetime, _dt.datetime, dict]] = []
+    for fid in fids:
+        base = f'kMDItemContentType == "{_MD_EVENT}" && {_MDP}folderID == {int(fid)}'
+        single = (f"{base} && {_MDP}recurring == 0"
+                  f" && {_MDP}startDate < {_md_time(we)}"
+                  f" && {_MDP}endDate > {_md_time(ws)}")
+        exceptions: dict[int, set] = {}
+        for r in _mdls(_mdfind(single), _EVENT_ATTRS):
+            s = _md_utc(r.get(_MDP + "startDate"))
+            e = _md_utc(r.get(_MDP + "endDate"))
+            if s is None or e is None:
+                continue
+            found.append((s, e, r))
+            parent = r.get(_MDP + "parentRecordID")
+            if parent is not None:
+                exceptions.setdefault(parent, set()).add(s.astimezone().date())
+        series = f"{base} && {_MDP}recurring == 1 && {_MDP}startDate < {_md_time(we)}"
+        for r in _mdls(_mdfind(series), _EVENT_ATTRS):
+            skip = exceptions.get(r.get(_MDP + "recordID"), set())
+            for s, e in _expand_recurring(r, ws, we, skip):
+                found.append((s, e, r))
+    found.sort(key=lambda t: t[0])
+    found = found[:limit]
+
+    ids = sorted({str(r.get(_MDP + "recordID")) for _, _, r in found
+                  if r.get(_MDP + "recordID") is not None})
+    extras = _run_jxa("event_extras", {"ids": ids}) if ids else {}
+    out = []
+    for s, e, r in found:
+        rid = r.get(_MDP + "recordID")
+        ex = extras.get(str(rid), {})
+        out.append({
+            "entry_id": str(rid) if rid is not None else None,
+            "store_id": None,
+            "subject": _display_name(r),
+            "location": ex.get("location") or r.get("kMDItemCoverage"),
+            "start": _md_iso(s),
+            "end": _md_iso(e),
+            "all_day": bool(r.get(_MDP + "allDay")),
+            "body": ex.get("body", ""),
+            "categories": _category_names(r.get(_MDP + "categories"), cats),
+            "organizer": ex.get("organizer"),
+            "is_recurring": bool(r.get(_MDP + "recurring")),
+        })
+    return out
 
 
 # ---- public API ----------------------------------------------------------
@@ -1258,6 +1736,13 @@ def list_emails(
         _parse_iso(since)
     if before:
         _parse_iso(before)
+    if _spotlight_enabled():
+        try:
+            return _list_emails_spotlight(
+                _canonical_folder_path(folder), limit, unread_only,
+                from_filter, subject_filter, since, before, newest_first)
+        except _SpotlightUnavailable:
+            pass
     return _run_jxa("list_emails", {
         "folder": _canonical_folder_path(folder),
         "limit": limit,
@@ -1406,6 +1891,11 @@ def list_calendar_events(
     limit: int = 100,
 ) -> list[dict]:
     _parse_iso(start); _parse_iso(end)
+    if _spotlight_enabled():
+        try:
+            return _list_calendar_spotlight(start, end, calendar, limit)
+        except _SpotlightUnavailable:
+            pass
     return _run_jxa("list_calendar_events", {
         "start": start, "end": end, "calendar": calendar, "limit": limit,
     })
